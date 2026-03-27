@@ -9,6 +9,10 @@ vars:
   BRIDGE_SRC: "{{.ROOT_DIR}}/bridge/src/llama_bridge.c"
   BRIDGE_INCLUDE: "{{.ROOT_DIR}}/bridge/include"
   BUILD_DIR: "{{.ROOT_DIR}}/build"
+  # Semantic version used by the publish tasks.
+  # Override on the command line: task publish VERSION=1.2.3
+  VERSION:
+    sh: "git describe --tags --match 'v*' --abbrev=0 2>/dev/null | sed 's/^v//' || echo '0.1.0'"
 
 # ---------------------------------------------------------------------------
 # Tasks
@@ -130,6 +134,90 @@ tasks:
       - task: build-bridge
       - task: test
       - echo "Upgrade complete. Only bridge/src/llama_bridge.c may need manual adjustment."
+
+  # --------------------------------------------------------------------------
+  # Publishing
+  # --------------------------------------------------------------------------
+
+  # publish-go:
+  #   Tags the Go sub-module with the conventional Go prefix and pushes the tag
+  #   so that pkg.go.dev and `go get` can resolve the release.
+  #
+  #   Requires: git push access to the origin remote.
+  #
+  #   Example:
+  #     task publish-go VERSION=1.0.0
+  publish-go:
+    desc: "Tag and push the Go module release (pkg.go.dev)"
+    cmds:
+      - |
+        TAG="bindings/go/v{{.VERSION}}"
+        echo "Creating Go module tag: ${TAG}"
+        git tag "${TAG}"
+        git push origin "${TAG}"
+        echo "Go module published. Import with:"
+        echo "  go get github.com/muthuishere/llama-bindings/bindings/go@v{{.VERSION}}"
+
+  # --------------------------------------------------------------------------
+  # publish-java:
+  #   Deploys the Java binding JAR to GitHub Packages (Maven registry).
+  #
+  #   Requires:
+  #     GITHUB_TOKEN env var with write:packages permission.
+  #     GITHUB_ACTOR env var (your GitHub username).
+  #
+  #   For Maven Central deployment, set MAVEN_CENTRAL=true and ensure
+  #   OSSRH_USERNAME, OSSRH_PASSWORD, and GPG_PASSPHRASE are set.
+  #
+  #   Example:
+  #     GITHUB_TOKEN=<token> GITHUB_ACTOR=<user> task publish-java VERSION=1.0.0
+  publish-java:
+    desc: "Deploy the Java binding to GitHub Packages (Maven)"
+    dir: "bindings/java"
+    cmds:
+      - |
+        echo "Deploying Java binding v{{.VERSION}} to GitHub Packages..."
+        mvn deploy \
+          --no-transfer-progress \
+          -DskipTests \
+          -Drevision={{.VERSION}}
+
+  # --------------------------------------------------------------------------
+  # publish-js:
+  #   Publishes the JS binding to npm.
+  #
+  #   Requires:
+  #     npm authentication — run `npm login` once, or set NPM_TOKEN env var
+  #     and add an `.npmrc` file containing `//registry.npmjs.org/:_authToken=${NPM_TOKEN}`.
+  #
+  #   Example:
+  #     NPM_TOKEN=<token> task publish-js VERSION=1.0.0
+  publish-js:
+    desc: "Publish the JS binding to npm"
+    dir: "bindings/js"
+    cmds:
+      - |
+        echo "Publishing @muthuishere/llama-bindings-js v{{.VERSION}} to npm..."
+        npm version {{.VERSION}} --no-git-tag-version --allow-same-version
+        npm publish --access public
+
+  # --------------------------------------------------------------------------
+  # publish:
+  #   Publish all three language bindings in one shot.
+  #
+  #   Example:
+  #     GITHUB_TOKEN=<token> GITHUB_ACTOR=<user> NPM_TOKEN=<token> \
+  #       task publish VERSION=1.0.0
+  publish:
+    desc: "Publish Go, Java, and JS bindings (VERSION=x.y.z)"
+    cmds:
+      - task: publish-go
+        vars: { VERSION: "{{.VERSION}}" }
+      - task: publish-java
+        vars: { VERSION: "{{.VERSION}}" }
+      - task: publish-js
+        vars: { VERSION: "{{.VERSION}}" }
+      - echo "All bindings published at v{{.VERSION}}"
 
   # --------------------------------------------------------------------------
   clean:

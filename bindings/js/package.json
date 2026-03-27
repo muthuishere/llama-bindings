@@ -1,11 +1,35 @@
 {
-  "name": "llama-bindings-js",
+  "name": "@muthuishere/llama-bindings-js",
   "version": "0.1.0",
-  "description": "Thin JavaScript/Node.js binding to the llama_bridge C library",
+  "description": "Thin JavaScript/Node.js binding to the llama_bridge C library (llama.cpp wrapper)",
   "main": "src/llama.js",
   "type": "commonjs",
   "scripts": {
     "test": "node --test test/llama.test.js"
+  },
+  "keywords": [
+    "llama",
+    "llama.cpp",
+    "llm",
+    "ai",
+    "inference",
+    "native",
+    "ffi"
+  ],
+  "author": "muthuishere",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/muthuishere/llama-bindings.git",
+    "directory": "bindings/js"
+  },
+  "bugs": {
+    "url": "https://github.com/muthuishere/llama-bindings/issues"
+  },
+  "homepage": "https://github.com/muthuishere/llama-bindings#readme",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
   },
   "dependencies": {
     "ffi-napi": "^4.0.3",
