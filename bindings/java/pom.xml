@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                             https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.example.llama</groupId>
+    <artifactId>llama-bindings-java</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <packaging>jar</packaging>
+
+    <properties>
+        <java.version>17</java.version>
+        <maven.compiler.source>${java.version}</maven.compiler.source>
+        <maven.compiler.target>${java.version}</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <!-- Override with -DLLAMA_BRIDGE_LIB_DIR=<path> when running tests -->
+        <LLAMA_BRIDGE_LIB_DIR>${project.basedir}/../../build</LLAMA_BRIDGE_LIB_DIR>
+    </properties>
+
+    <dependencies>
+        <!-- JNA for native library binding -->
+        <dependency>
+            <groupId>net.java.dev.jna</groupId>
+            <artifactId>jna</artifactId>
+            <version>5.14.0</version>
+        </dependency>
+
+        <!-- JUnit 5 for tests -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>5.10.2</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.2.5</version>
+                <configuration>
+                    <systemPropertyVariables>
+                        <jna.library.path>${LLAMA_BRIDGE_LIB_DIR}</jna.library.path>
+                        <llama.bridge.lib.dir>${LLAMA_BRIDGE_LIB_DIR}</llama.bridge.lib.dir>
+                    </systemPropertyVariables>
+                    <argLine>-Djava.library.path=${LLAMA_BRIDGE_LIB_DIR}</argLine>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>

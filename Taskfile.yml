@@ -1,0 +1,138 @@
+version: "3"
+
+# ---------------------------------------------------------------------------
+# Variables
+# ---------------------------------------------------------------------------
+vars:
+  LLAMA_CPP_REPO: "https://github.com/ggerganov/llama.cpp.git"
+  LLAMA_CPP_DIR: "{{.ROOT_DIR}}/third_party/llama.cpp"
+  BRIDGE_SRC: "{{.ROOT_DIR}}/bridge/src/llama_bridge.c"
+  BRIDGE_INCLUDE: "{{.ROOT_DIR}}/bridge/include"
+  BUILD_DIR: "{{.ROOT_DIR}}/build"
+
+# ---------------------------------------------------------------------------
+# Tasks
+# ---------------------------------------------------------------------------
+tasks:
+
+  # --------------------------------------------------------------------------
+  default:
+    desc: "Show available tasks"
+    cmds:
+      - task --list
+
+  # --------------------------------------------------------------------------
+  init:
+    desc: "Clone llama.cpp into third_party/ if not already present"
+    cmds:
+      - |
+        if [ ! -d "{{.LLAMA_CPP_DIR}}/.git" ]; then
+          echo "Cloning llama.cpp..."
+          git clone --depth 1 {{.LLAMA_CPP_REPO}} {{.LLAMA_CPP_DIR}}
+        else
+          echo "llama.cpp already present — skipping clone."
+        fi
+
+  # --------------------------------------------------------------------------
+  update:
+    desc: "Pull latest llama.cpp from upstream"
+    deps: [init]
+    cmds:
+      - |
+        echo "Updating llama.cpp..."
+        cd {{.LLAMA_CPP_DIR}} && git fetch --depth 1 origin && git reset --hard origin/master
+
+  # --------------------------------------------------------------------------
+  configure:
+    desc: "Configure the llama.cpp CMake build"
+    deps: [init]
+    cmds:
+      - mkdir -p {{.BUILD_DIR}}
+      - |
+        cmake \
+          -S {{.LLAMA_CPP_DIR}} \
+          -B {{.BUILD_DIR}} \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DLLAMA_BUILD_TESTS=OFF \
+          -DLLAMA_BUILD_EXAMPLES=OFF \
+          -DBUILD_SHARED_LIBS=ON
+
+  # --------------------------------------------------------------------------
+  build-llama:
+    desc: "Build the llama.cpp shared library"
+    deps: [configure]
+    cmds:
+      - cmake --build {{.BUILD_DIR}} --config Release -j$(nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 4)
+
+  # --------------------------------------------------------------------------
+  build-bridge:
+    desc: "Build the C bridge shared library"
+    deps: [build-llama]
+    cmds:
+      - mkdir -p {{.BUILD_DIR}}
+      - |
+        cc -shared -fPIC -O2 \
+          -I{{.BRIDGE_INCLUDE}} \
+          -I{{.LLAMA_CPP_DIR}}/include \
+          -I{{.LLAMA_CPP_DIR}}/ggml/include \
+          {{.BRIDGE_SRC}} \
+          -L{{.BUILD_DIR}} \
+          -lllama \
+          -lstdc++ \
+          -o {{.BUILD_DIR}}/libllama_bridge.so
+      - echo "Bridge built: {{.BUILD_DIR}}/libllama_bridge.so"
+
+  # --------------------------------------------------------------------------
+  build-go:
+    desc: "Build and test the Go binding"
+    deps: [build-bridge]
+    dir: "bindings/go"
+    cmds:
+      - |
+        CGO_CFLAGS="-I{{.ROOT_DIR}}/bridge/include -I{{.LLAMA_CPP_DIR}}/include -I{{.LLAMA_CPP_DIR}}/ggml/include" \
+        CGO_LDFLAGS="-L{{.BUILD_DIR}} -lllama_bridge -lllama -Wl,-rpath,{{.BUILD_DIR}}" \
+        go build ./...
+      - |
+        CGO_CFLAGS="-I{{.ROOT_DIR}}/bridge/include -I{{.LLAMA_CPP_DIR}}/include -I{{.LLAMA_CPP_DIR}}/ggml/include" \
+        CGO_LDFLAGS="-L{{.BUILD_DIR}} -lllama_bridge -lllama -Wl,-rpath,{{.BUILD_DIR}}" \
+        go test ./... -v -timeout 120s
+
+  # --------------------------------------------------------------------------
+  build-java:
+    desc: "Build and test the Java binding"
+    deps: [build-bridge]
+    dir: "bindings/java"
+    cmds:
+      - mvn -q test -DLLAMA_BRIDGE_LIB_DIR={{.BUILD_DIR}}
+
+  # --------------------------------------------------------------------------
+  build-js:
+    desc: "Build and test the JS binding"
+    dir: "bindings/js"
+    cmds:
+      - npm install
+      - npm test
+
+  # --------------------------------------------------------------------------
+  test:
+    desc: "Run all language binding tests"
+    cmds:
+      - task: build-go
+      - task: build-java
+      - task: build-js
+
+  # --------------------------------------------------------------------------
+  upgrade:
+    desc: "Update llama.cpp and rebuild everything"
+    cmds:
+      - task: update
+      - task: build-llama
+      - task: build-bridge
+      - task: test
+      - echo "Upgrade complete. Only bridge/src/llama_bridge.c may need manual adjustment."
+
+  # --------------------------------------------------------------------------
+  clean:
+    desc: "Remove all build artifacts"
+    cmds:
+      - rm -rf {{.BUILD_DIR}}

@@ -1,0 +1,37 @@
+# Dependencies / vendored upstream
+third_party/llama.cpp/
+
+# Build artifacts
+build/
+dist/
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.wasm
+
+# Go
+bindings/go/vendor/
+bindings/go/**/*.test
+
+# Java
+bindings/java/target/
+bindings/java/.gradle/
+bindings/java/build/
+*.class
+*.jar
+
+# JS / Node
+bindings/js/node_modules/
+bindings/js/dist/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
