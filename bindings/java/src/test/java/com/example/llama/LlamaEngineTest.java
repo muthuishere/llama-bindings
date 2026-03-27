@@ -1,7 +1,8 @@
 package com.example.llama;
 
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
+
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -38,13 +39,28 @@ class LlamaEngineTest {
                 () -> LlamaEngine.load("   "));
     }
 
+    @Test
+    void message_throwsOnNullRole() {
+        assertThrows(IllegalArgumentException.class,
+                () -> new LlamaEngine.Message(null, "hi"));
+    }
+
+    @Test
+    void message_factoryMethods() {
+        LlamaEngine.Message sys  = LlamaEngine.Message.system("sys");
+        LlamaEngine.Message usr  = LlamaEngine.Message.user("usr");
+        LlamaEngine.Message asst = LlamaEngine.Message.assistant("asst");
+        assertEquals("system",    sys.role);
+        assertEquals("user",      usr.role);
+        assertEquals("assistant", asst.role);
+    }
+
     // ---------------------------------------------------------------------------
     // Integration tests — require llama.test.model system property
     // ---------------------------------------------------------------------------
 
     private static final String MODEL_PROP = "llama.test.model";
 
-    /** Returns model path or skips the test if not configured. */
     private static String requireModelPath() {
         String path = System.getProperty(MODEL_PROP);
         org.junit.jupiter.api.Assumptions.assumeTrue(
@@ -76,7 +92,6 @@ class LlamaEngineTest {
     void emptyPrompt_doesNotCrash() {
         String model = requireModelPath();
         try (LlamaEngine engine = LlamaEngine.load(model)) {
-            // Must not throw or crash.
             engine.complete("");
         }
     }
@@ -104,7 +119,6 @@ class LlamaEngineTest {
         String model = requireModelPath();
         LlamaEngine engine = LlamaEngine.load(model);
         engine.close();
-        // Second close should not throw.
         assertDoesNotThrow(engine::close);
     }
 
@@ -124,6 +138,124 @@ class LlamaEngineTest {
             try (LlamaEngine engine = LlamaEngine.load(model)) {
                 assertNotNull(engine);
             }
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Chat integration tests
+    // ---------------------------------------------------------------------------
+
+    @Test
+    void chat_withSystem_returnsNonEmpty() {
+        String model = requireModelPath();
+        try (LlamaEngine engine = LlamaEngine.load(model)) {
+            String result = engine.chat("You are a helpful assistant.", "Say hello.");
+            assertFalse(result.isBlank(), "chat response must not be blank");
+        }
+    }
+
+    @Test
+    void chat_noSystem_returnsNonEmpty() {
+        String model = requireModelPath();
+        try (LlamaEngine engine = LlamaEngine.load(model)) {
+            String result = engine.chat("", "Say hello.");
+            assertFalse(result.isBlank(), "chat (no system) response must not be blank");
+        }
+    }
+
+    @Test
+    void chat_afterClose_throwsIllegalStateException() {
+        String model = requireModelPath();
+        LlamaEngine engine = LlamaEngine.load(model);
+        engine.close();
+        assertThrows(IllegalStateException.class,
+                () -> engine.chat("sys", "user"));
+    }
+
+    @Test
+    void chatWithMessages_returnsNonEmpty() {
+        String model = requireModelPath();
+        try (LlamaEngine engine = LlamaEngine.load(model)) {
+            List<LlamaEngine.Message> msgs = List.of(
+                    LlamaEngine.Message.system("You are a helpful assistant."),
+                    LlamaEngine.Message.user("Say hello in one sentence.")
+            );
+            String result = engine.chatWithMessages(msgs);
+            assertFalse(result.isBlank(), "chatWithMessages response must not be blank");
+        }
+    }
+
+    @Test
+    void chatWithMessages_throwsOnEmptyList() {
+        String model = requireModelPath();
+        try (LlamaEngine engine = LlamaEngine.load(model)) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> engine.chatWithMessages(List.of()));
+        }
+    }
+
+    @Test
+    void chatSession_multiTurn_doesNotCrash() {
+        String model = requireModelPath();
+        try (LlamaEngine engine = LlamaEngine.load(model)) {
+            String turn1 = engine.chatSession("sid-java-1", "Say hello.");
+            assertFalse(turn1.isBlank(), "turn 1 must not be blank");
+
+            String turn2 = engine.chatSession("sid-java-1", "What did you just say?");
+            assertFalse(turn2.isBlank(), "turn 2 must not be blank");
+        }
+    }
+
+    @Test
+    void chatSession_setSystem_doesNotCrash() {
+        String model = requireModelPath();
+        try (LlamaEngine engine = LlamaEngine.load(model)) {
+            engine.chatSessionSetSystem("sid-java-sys", "You are a helpful assistant.");
+            String result = engine.chatSession("sid-java-sys", "Say hello.");
+            assertFalse(result.isBlank(), "session with system response must not be blank");
+        }
+    }
+
+    @Test
+    void chatSession_clearThenContinue_doesNotCrash() {
+        String model = requireModelPath();
+        try (LlamaEngine engine = LlamaEngine.load(model)) {
+            engine.chatSession("sid-java-clear", "Say hello.");
+            engine.chatSessionClear("sid-java-clear");
+            String result = engine.chatSession("sid-java-clear", "Say hello again.");
+            assertFalse(result.isBlank(), "response after clear must not be blank");
+        }
+    }
+
+    @Test
+    void chatSession_throwsOnBlankSessionId() {
+        String model = requireModelPath();
+        try (LlamaEngine engine = LlamaEngine.load(model)) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> engine.chatSession("", "hello"));
+        }
+    }
+
+    @Test
+    void chatWithTools_returnsRawOutput() {
+        String model = requireModelPath();
+        try (LlamaEngine engine = LlamaEngine.load(model)) {
+            String tools = "[{\"name\":\"get_weather\",\"description\":\"Get the weather\","
+                    + "\"parameters\":{\"location\":{\"type\":\"string\"}}}]";
+            List<LlamaEngine.Message> msgs = List.of(
+                    LlamaEngine.Message.user("What is the weather in Paris?")
+            );
+            String result = engine.chatWithTools(msgs, tools);
+            assertFalse(result.isBlank(), "chatWithTools response must not be blank");
+        }
+    }
+
+    @Test
+    void chatWithTools_throwsOnEmptyMessages() {
+        String model = requireModelPath();
+        try (LlamaEngine engine = LlamaEngine.load(model)) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> engine.chatWithTools(List.of(), "[]"));
         }
     }
 }

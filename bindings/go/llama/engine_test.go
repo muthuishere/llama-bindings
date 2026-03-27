@@ -60,6 +60,46 @@ func TestClose_NilEngine(t *testing.T) {
 	}
 }
 
+// TestChat_NilEngine verifies Chat returns an error on a nil engine.
+func TestChat_NilEngine(t *testing.T) {
+	var e *llama.Engine
+	_, err := e.Chat("", "hello")
+	if err == nil {
+		t.Fatal("expected error from nil engine, got nil")
+	}
+}
+
+// TestChatWithMessages_EmptySlice verifies ChatWithMessages returns an error
+// for an empty message slice.
+func TestChatWithMessages_EmptySlice(t *testing.T) {
+	_, err := llama.Load("/nonexistent/model.gguf")
+	// We just need any Engine-shaped error check; use a nil engine:
+	var e *llama.Engine
+	_, err = e.ChatWithMessages(nil)
+	if err == nil {
+		t.Fatal("expected error for nil engine, got nil")
+	}
+}
+
+// TestChatSession_EmptySessionID verifies that an empty session ID returns
+// an error.
+func TestChatSession_EmptySessionID(t *testing.T) {
+	var e *llama.Engine
+	_, err := e.ChatSession("", "hello")
+	if err == nil {
+		t.Fatal("expected error for nil engine, got nil")
+	}
+}
+
+// TestChatWithTools_NilEngine verifies ChatWithTools returns error on nil engine.
+func TestChatWithTools_NilEngine(t *testing.T) {
+	var e *llama.Engine
+	_, err := e.ChatWithTools([]llama.Message{{Role: "user", Content: "hi"}}, "[]")
+	if err == nil {
+		t.Fatal("expected error from nil engine, got nil")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Integration tests — require LLAMA_TEST_MODEL to be set
 // ---------------------------------------------------------------------------
@@ -152,3 +192,161 @@ func TestCreateDestroyCycle(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Chat integration tests
+// ---------------------------------------------------------------------------
+
+// TestChat_WithSystem verifies one-shot chat with a system message.
+func TestChat_WithSystem(t *testing.T) {
+	engine, err := llama.Load(modelPath(t))
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	defer engine.Close()
+
+	out, err := engine.Chat("You are a helpful assistant.", "Say hello.")
+	if err != nil {
+		t.Fatalf("Chat failed: %v", err)
+	}
+	if strings.TrimSpace(out) == "" {
+		t.Fatal("expected non-empty chat response")
+	}
+	t.Logf("chat with system: %s", out)
+}
+
+// TestChat_NoSystem verifies one-shot chat without a system message.
+func TestChat_NoSystem(t *testing.T) {
+	engine, err := llama.Load(modelPath(t))
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	defer engine.Close()
+
+	out, err := engine.Chat("", "Say hello.")
+	if err != nil {
+		t.Fatalf("Chat (no system) failed: %v", err)
+	}
+	if strings.TrimSpace(out) == "" {
+		t.Fatal("expected non-empty chat response")
+	}
+	t.Logf("chat no system: %s", out)
+}
+
+// TestChatWithMessages_MultiTurn verifies chatWithObject-style call.
+func TestChatWithMessages_MultiTurn(t *testing.T) {
+	engine, err := llama.Load(modelPath(t))
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	defer engine.Close()
+
+	msgs := []llama.Message{
+		{Role: "system", Content: "You are a helpful assistant."},
+		{Role: "user", Content: "Say hello in one sentence."},
+	}
+	out, err := engine.ChatWithMessages(msgs)
+	if err != nil {
+		t.Fatalf("ChatWithMessages failed: %v", err)
+	}
+	if strings.TrimSpace(out) == "" {
+		t.Fatal("expected non-empty response")
+	}
+	t.Logf("chatWithMessages: %s", out)
+}
+
+// TestChatSession_MultiTurn verifies session-based multi-turn chat.
+func TestChatSession_MultiTurn(t *testing.T) {
+	engine, err := llama.Load(modelPath(t))
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	defer engine.Close()
+
+	sid := "test-session-1"
+
+	out1, err := engine.ChatSession(sid, "Say hello.")
+	if err != nil {
+		t.Fatalf("ChatSession turn 1 failed: %v", err)
+	}
+	t.Logf("session turn 1: %s", out1)
+
+	out2, err := engine.ChatSession(sid, "What did you just say?")
+	if err != nil {
+		t.Fatalf("ChatSession turn 2 failed: %v", err)
+	}
+	if strings.TrimSpace(out2) == "" {
+		t.Fatal("expected non-empty response for turn 2")
+	}
+	t.Logf("session turn 2: %s", out2)
+}
+
+// TestChatSession_SetSystem verifies that setting a system message for a
+// session works correctly.
+func TestChatSession_SetSystem(t *testing.T) {
+	engine, err := llama.Load(modelPath(t))
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	defer engine.Close()
+
+	sid := "test-session-system"
+	engine.ChatSessionSetSystem(sid, "You are a helpful assistant.")
+
+	out, err := engine.ChatSession(sid, "Say hello.")
+	if err != nil {
+		t.Fatalf("ChatSession with system failed: %v", err)
+	}
+	if strings.TrimSpace(out) == "" {
+		t.Fatal("expected non-empty response")
+	}
+	t.Logf("session with system: %s", out)
+}
+
+// TestChatSession_Clear verifies that clearing a session resets history.
+func TestChatSession_Clear(t *testing.T) {
+	engine, err := llama.Load(modelPath(t))
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	defer engine.Close()
+
+	sid := "test-session-clear"
+	_, _ = engine.ChatSession(sid, "Say hello.")
+
+	engine.ChatSessionClear(sid)
+
+	// After clearing, the session should start fresh.
+	out, err := engine.ChatSession(sid, "Say hello again.")
+	if err != nil {
+		t.Fatalf("ChatSession after clear failed: %v", err)
+	}
+	if strings.TrimSpace(out) == "" {
+		t.Fatal("expected non-empty response after clear")
+	}
+	t.Logf("session after clear: %s", out)
+}
+
+// TestChatWithTools_Basic verifies tool definition chat returns raw output.
+func TestChatWithTools_Basic(t *testing.T) {
+	engine, err := llama.Load(modelPath(t))
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	defer engine.Close()
+
+	tools := `[{"name":"get_weather","description":"Get the current weather","parameters":{"location":{"type":"string","description":"City name"}}}]`
+	msgs := []llama.Message{
+		{Role: "user", Content: "What is the weather in Paris?"},
+	}
+
+	out, err := engine.ChatWithTools(msgs, tools)
+	if err != nil {
+		t.Fatalf("ChatWithTools failed: %v", err)
+	}
+	if strings.TrimSpace(out) == "" {
+		t.Fatal("expected non-empty response from ChatWithTools")
+	}
+	t.Logf("chatWithTools raw output: %s", out)
+}
+

@@ -17,35 +17,69 @@ interface LlamaLibrary extends Library {
      */
     LlamaLibrary INSTANCE = Native.load("llama_bridge", LlamaLibrary.class);
 
-    /**
-     * Create an engine from a GGUF model file.
-     *
-     * @param modelPath absolute or relative path to the model file
-     * @return opaque engine pointer, or {@code null} on failure
-     */
+    /* ---- v1: simple completion ---- */
+
     Pointer llama_engine_create(String modelPath);
-
-    /**
-     * Run inference and return a completion string.
-     *
-     * @param engine engine pointer returned by {@link #llama_engine_create}
-     * @param prompt prompt text (may be empty but not null)
-     * @return heap-allocated completion string, or {@code null} on failure;
-     *         must be freed with {@link #llama_engine_free_string}
-     */
     Pointer llama_engine_complete(Pointer engine, String prompt);
+    void    llama_engine_free_string(Pointer str);
+    void    llama_engine_destroy(Pointer engine);
+
+    /* ---- v2: chat ---- */
 
     /**
-     * Free a string returned by {@link #llama_engine_complete}.
-     *
-     * @param str pointer to the string to free
+     * One-shot chat with optional system message and user message.
+     * systemMsg may be null or empty to omit.
      */
-    void llama_engine_free_string(Pointer str);
+    Pointer llama_engine_chat(Pointer engine, String systemMsg, String userMsg);
 
     /**
-     * Destroy the engine and release all resources.
+     * Chat with an explicit message array.
      *
-     * @param engine engine pointer to destroy
+     * @param roles     array of role strings ("system"|"user"|"assistant")
+     * @param contents  array of message content strings
+     * @param nMessages number of messages
      */
-    void llama_engine_destroy(Pointer engine);
+    Pointer llama_engine_chat_with_messages(
+            Pointer engine, String[] roles, String[] contents, int nMessages);
+
+    /**
+     * Session-based multi-turn chat.
+     *
+     * @param sessionId session identifier
+     * @param userMsg   the user turn to append
+     */
+    Pointer llama_engine_chat_session(
+            Pointer engine, String sessionId, String userMsg);
+
+    /**
+     * Set (or replace) the system message for a session.
+     *
+     * @param sessionId session identifier
+     * @param systemMsg system message text (null or "" to clear)
+     */
+    void llama_engine_chat_session_set_system(
+            Pointer engine, String sessionId, String systemMsg);
+
+    /**
+     * Clear all history for a session.
+     *
+     * @param sessionId session identifier
+     */
+    void llama_engine_chat_session_clear(Pointer engine, String sessionId);
+
+    /**
+     * Chat with tool definitions.
+     *
+     * @param roles      array of role strings
+     * @param contents   array of message content strings
+     * @param nMessages  number of messages
+     * @param toolsJson  JSON array of tool definitions (OpenAI-compatible format)
+     */
+    Pointer llama_engine_chat_with_tools(
+            Pointer engine,
+            String[] roles,
+            String[] contents,
+            int      nMessages,
+            String   toolsJson);
 }
+
