@@ -39,20 +39,20 @@ test('engine.complete() throws after close()', () => {
 test('engine.chat() throws after close()', () => {
     const { Engine } = require('../src/llama');
     const e = new Engine(null, null);
-    assert.throws(() => e.chat('sid', { userMessage: 'hi' }), /closed/i);
+    assert.throws(() => e.chat('sid', [{ role: 'user', content: 'hi' }]), /closed/i);
 });
 
 test('engine.chat() throws on empty sessionId', () => {
     const { Engine } = require('../src/llama');
     const e = new Engine(null, null);
     // closed check fires first — that's acceptable
-    assert.throws(() => e.chat('', { userMessage: 'hi' }));
+    assert.throws(() => e.chat('', [{ role: 'user', content: 'hi' }]));
 });
 
 test('engine.chatWithObject() throws after close()', () => {
     const { Engine } = require('../src/llama');
     const e = new Engine(null, null);
-    assert.throws(() => e.chatWithObject('sid', { userMessage: 'hi' }), /closed/i);
+    assert.throws(() => e.chatWithObject('sid', [{ role: 'user', content: 'hi' }]), /closed/i);
 });
 
 test('engine.close() is idempotent with null handle', () => {
@@ -118,10 +118,10 @@ test('chat() with system message returns {role,content}', { skip: !modelPath() }
     const Llama  = require('../src/llama');
     const engine = Llama.load(modelPath());
     try {
-        const msg = engine.chat('sid-js-1', {
-            systemMessage: 'You are a helpful assistant.',
-            userMessage:   'Say hello.',
-        });
+        const msg = engine.chat('sid-js-1', [
+            { role: 'system', content: 'You are a helpful assistant.' },
+            { role: 'user',   content: 'Say hello.' },
+        ]);
         assert.equal(msg.role, 'assistant', 'role must be assistant');
         assert.ok(msg.content.trim().length > 0, 'content must be non-empty');
     } finally {
@@ -133,7 +133,9 @@ test('chat() without system message returns {role,content}', { skip: !modelPath(
     const Llama  = require('../src/llama');
     const engine = Llama.load(modelPath());
     try {
-        const msg = engine.chat('sid-js-2', { userMessage: 'Say hello.' });
+        const msg = engine.chat('sid-js-2', [
+            { role: 'user', content: 'Say hello.' },
+        ]);
         assert.equal(msg.role, 'assistant');
         assert.ok(msg.content.trim().length > 0);
     } finally {
@@ -145,58 +147,60 @@ test('chat() multi-turn maintains history', { skip: !modelPath() }, () => {
     const Llama  = require('../src/llama');
     const engine = Llama.load(modelPath());
     try {
-        const t1 = engine.chat('sid-js-mt', {
-            systemMessage: 'You are helpful.',
-            userMessage:   'Say hello.',
-        });
+        const t1 = engine.chat('sid-js-mt', [
+            { role: 'system', content: 'You are helpful.' },
+            { role: 'user',   content: 'Say hello.' },
+        ]);
         assert.ok(t1.content.trim().length > 0, 'turn 1 must be non-empty');
 
-        const t2 = engine.chat('sid-js-mt', { userMessage: 'What did you just say?' });
+        const t2 = engine.chat('sid-js-mt', [
+            { role: 'user', content: 'What did you just say?' },
+        ]);
         assert.ok(t2.content.trim().length > 0, 'turn 2 must be non-empty');
     } finally {
         engine.close();
     }
 });
 
-test('chat() with assistantMessage does not crash', { skip: !modelPath() }, () => {
+test('chat() with assistant message does not crash', { skip: !modelPath() }, () => {
     const Llama  = require('../src/llama');
     const engine = Llama.load(modelPath());
     try {
-        const msg = engine.chat('sid-js-asst', {
-            systemMessage:    'You are helpful.',
-            assistantMessage: 'I said hello earlier.',
-            userMessage:      'What did you say before?',
-        });
+        const msg = engine.chat('sid-js-asst', [
+            { role: 'system',    content: 'You are helpful.' },
+            { role: 'assistant', content: 'I said hello earlier.' },
+            { role: 'user',      content: 'What did you say before?' },
+        ]);
         assert.ok(msg.content.trim().length > 0);
     } finally {
         engine.close();
     }
 });
 
-test('chat() with toolMessage does not crash', { skip: !modelPath() }, () => {
+test('chat() with tool message does not crash', { skip: !modelPath() }, () => {
     const Llama  = require('../src/llama');
     const engine = Llama.load(modelPath());
     try {
-        const msg = engine.chat('sid-js-tool', {
-            systemMessage: 'You are a helpful assistant.',
-            toolMessage:   '{"weather":"sunny","temp":"22C"}',
-            userMessage:   'What is the weather like?',
-        });
+        const msg = engine.chat('sid-js-tool', [
+            { role: 'system', content: 'You are a helpful assistant.' },
+            { role: 'tool',   content: '{"weather":"sunny","temp":"22C"}' },
+            { role: 'user',   content: 'What is the weather like?' },
+        ]);
         assert.ok(msg.content.trim().length > 0);
     } finally {
         engine.close();
     }
 });
 
-test('chatWithObject() returns schema response', { skip: !modelPath() }, () => {
+test('chatWithObject() returns plain JS object', { skip: !modelPath() }, () => {
     const Llama  = require('../src/llama');
     const engine = Llama.load(modelPath());
     const sid    = 'sid-js-obj';
     try {
-        const resp = engine.chatWithObject(sid, {
-            systemMessage: 'You are helpful.',
-            userMessage:   'Say hello.',
-        });
+        const resp = engine.chatWithObject(sid, [
+            { role: 'system', content: 'You are helpful.' },
+            { role: 'user',   content: 'Say hello.' },
+        ]);
         assert.equal(resp.role, 'assistant', 'role must be assistant');
         assert.ok(resp.content.trim().length > 0, 'content must be non-empty');
         assert.equal(resp.sessionId, sid, 'sessionId must match');
@@ -211,8 +215,8 @@ test('chatWithObject() messageCount grows across turns', { skip: !modelPath() },
     const engine = Llama.load(modelPath());
     const sid    = 'sid-js-obj-mt';
     try {
-        const r1 = engine.chatWithObject(sid, { userMessage: 'Hello.' });
-        const r2 = engine.chatWithObject(sid, { userMessage: 'How are you?' });
+        const r1 = engine.chatWithObject(sid, [{ role: 'user', content: 'Hello.' }]);
+        const r2 = engine.chatWithObject(sid, [{ role: 'user', content: 'How are you?' }]);
         assert.ok(r2.messageCount > r1.messageCount,
             `messageCount should grow: r1=${r1.messageCount} r2=${r2.messageCount}`);
     } finally {
@@ -225,9 +229,9 @@ test('chatSessionClear() resets history', { skip: !modelPath() }, () => {
     const engine = Llama.load(modelPath());
     const sid    = 'sid-js-clear';
     try {
-        engine.chat(sid, { userMessage: 'Say hello.' });
+        engine.chat(sid, [{ role: 'user', content: 'Say hello.' }]);
         engine.chatSessionClear(sid);
-        const msg = engine.chat(sid, { userMessage: 'Say hello again.' });
+        const msg = engine.chat(sid, [{ role: 'user', content: 'Say hello again.' }]);
         assert.ok(msg.content.trim().length > 0, 'content after clear must be non-empty');
     } finally {
         engine.close();

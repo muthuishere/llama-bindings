@@ -12,24 +12,31 @@
  *   // Raw completion (no chat template)
  *   const out = engine.complete('Say hello.');
  *
- *   // Session-based chat — returns {role, content}
- *   const msg = engine.chat('sid-1', {
- *     systemMessage: 'You are helpful.',
- *     userMessage:   'What is 2+2?',
- *   });
+ *   // Session-based chat — pass an array of {role, content} objects,
+ *   // returns {role, content}.
+ *   const msg = engine.chat('sid-1', [
+ *     { role: 'system', content: 'You are helpful.' },
+ *     { role: 'user',   content: 'What is 2+2?' },
+ *   ]);
  *   console.log(msg.content);
  *
- *   // Structured response with session metadata
- *   const resp = engine.chatWithObject('sid-1', {
- *     userMessage: 'Tell me more.',
- *   });
- *   console.log(resp.role, resp.content, resp.sessionId, resp.messageCount);
+ *   // Multi-turn: only pass the new messages each turn.
+ *   const msg2 = engine.chat('sid-1', [
+ *     { role: 'user', content: 'Tell me more.' },
+ *   ]);
  *
- *   // Inject a tool response into the conversation
- *   engine.chat('sid-1', {
- *     toolMessage: '{"result": 42}',
- *     userMessage: 'What was the result?',
- *   });
+ *   // Inject a tool response before the user message.
+ *   engine.chat('sid-1', [
+ *     { role: 'tool', content: '{"result": 42}' },
+ *     { role: 'user', content: 'What was the result?' },
+ *   ]);
+ *
+ *   // Richer schema response — returns plain JS object with
+ *   // role, content, sessionId, messageCount.
+ *   const resp = engine.chatWithObject('sid-1', [
+ *     { role: 'user', content: 'Hello.' },
+ *   ]);
+ *   console.log(resp.role, resp.content, resp.sessionId, resp.messageCount);
  *
  *   // Clear session history
  *   engine.chatSessionClear('sid-1');
@@ -69,14 +76,14 @@ function getLib() {
     if (!_lib) {
         _lib = ffi.Library(libName, {
             /* core */
-            llama_engine_create:              [voidPtr, ['string']],
-            llama_engine_complete:            [voidPtr, [voidPtr, 'string']],
-            llama_engine_free_string:         ['void',  [voidPtr]],
-            llama_engine_destroy:             ['void',  [voidPtr]],
-            /* chat */
-            llama_engine_chat:                [voidPtr, [voidPtr, 'string', 'string', 'string', 'string', 'string']],
-            llama_engine_chat_with_object:    [voidPtr, [voidPtr, 'string', 'string', 'string', 'string', 'string']],
-            llama_engine_chat_session_clear:  ['void',  [voidPtr, 'string']],
+            llama_engine_create:                        [voidPtr, ['string']],
+            llama_engine_complete:                      [voidPtr, [voidPtr, 'string']],
+            llama_engine_free_string:                   ['void',  [voidPtr]],
+            llama_engine_destroy:                       ['void',  [voidPtr]],
+            /* chat — array-based (primary interface) */
+            llama_engine_chat_messages:                 [voidPtr, [voidPtr, 'string', 'string']],
+            llama_engine_chat_with_object_messages:     [voidPtr, [voidPtr, 'string', 'string']],
+            llama_engine_chat_session_clear:            ['void',  [voidPtr, 'string']],
         });
     }
     return _lib;
@@ -140,31 +147,26 @@ class Engine {
     // -----------------------------------------------------------------------
 
     /**
-     * Session-based chat turn. Returns {role, content}.
+     * Session-based chat turn.  Returns {role, content}.
      *
      * The engine maintains conversation history keyed by sessionId.
-     * Non-empty fields in the request are appended to the session in this
-     * order: systemMessage → assistantMessage → toolMessage → userMessage.
+     * Pass an ordered array of {role, content} messages to append to
+     * the session for this turn.  Supported roles: "system", "user",
+     * "assistant", "tool".  A "system" entry sets or replaces the session
+     * system prompt.
      *
      * @param {string} sessionId  conversation identifier (auto-created on first call)
-     * @param {object} request    message fields
-     * @param {string} [request.systemMessage='']    optional system prompt
-     * @param {string} [request.userMessage='']      the user turn
-     * @param {string} [request.assistantMessage=''] optional prior assistant turn
-     * @param {string} [request.toolMessage='']      optional tool response
+     * @param {Array<{role:string, content:string}>} messages  messages to append
      * @returns {{role: string, content: string}}
      */
-    chat(sessionId, request) {
+    chat(sessionId, messages) {
         this._ensureOpen();
         if (!sessionId) throw new Error('llama: sessionId must not be empty');
-        const req = request || {};
-        const resultPtr = this._lib.llama_engine_chat(
+        const msgs = messages || [];
+        const resultPtr = this._lib.llama_engine_chat_messages(
             this._handle,
             sessionId,
-            req.systemMessage    || '',
-            req.userMessage      || '',
-            req.assistantMessage || '',
-            req.toolMessage      || ''
+            JSON.stringify(msgs)
         );
         if (ref.isNull(resultPtr)) throw new Error('llama: chat returned null');
         const json = _readAndFree(this._lib, resultPtr);
@@ -172,26 +174,23 @@ class Engine {
     }
 
     /**
-     * Session-based chat turn that returns a richer schema response.
+     * Session-based chat turn that returns a richer plain JS object.
      *
      * Same as {@link chat} but the returned object also contains
      * {@code sessionId} and {@code messageCount}.
      *
      * @param {string} sessionId  conversation identifier
-     * @param {object} request    same fields as {@link chat}
+     * @param {Array<{role:string, content:string}>} messages  messages to append
      * @returns {{role: string, content: string, sessionId: string, messageCount: number}}
      */
-    chatWithObject(sessionId, request) {
+    chatWithObject(sessionId, messages) {
         this._ensureOpen();
         if (!sessionId) throw new Error('llama: sessionId must not be empty');
-        const req = request || {};
-        const resultPtr = this._lib.llama_engine_chat_with_object(
+        const msgs = messages || [];
+        const resultPtr = this._lib.llama_engine_chat_with_object_messages(
             this._handle,
             sessionId,
-            req.systemMessage    || '',
-            req.userMessage      || '',
-            req.assistantMessage || '',
-            req.toolMessage      || ''
+            JSON.stringify(msgs)
         );
         if (ref.isNull(resultPtr)) throw new Error('llama: chatWithObject returned null');
         const json = _readAndFree(this._lib, resultPtr);

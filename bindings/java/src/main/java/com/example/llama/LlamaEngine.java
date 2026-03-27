@@ -2,6 +2,10 @@ package com.example.llama;
 
 import com.sun.jna.Pointer;
 
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
 /**
  * High-level Java wrapper around the llama_bridge C library.
  *
@@ -12,20 +16,18 @@ import com.sun.jna.Pointer;
  *     // Raw completion (no chat template)
  *     String out = engine.complete("Say hello.");
  *
- *     // Session-based chat — returns ChatMessage{role, content}
- *     LlamaEngine.ChatMessage msg = engine.chat("sid-1",
- *         new LlamaEngine.ChatRequest("You are helpful.", "What is 2+2?", null, null));
+ *     // Session-based chat — pass an ordered list of ChatMessage values,
+ *     // get back a ChatMessage{role="assistant", content="..."}.
+ *     LlamaEngine.ChatMessage msg = engine.chat("sid-1", List.of(
+ *         new LlamaEngine.ChatMessage("system", "You are helpful."),
+ *         new LlamaEngine.ChatMessage("user",   "What is 2+2?")));
  *     System.out.println(msg.content);
  *
- *     // Structured response with session metadata
- *     LlamaEngine.ChatResponse resp = engine.chatWithObject("sid-1",
- *         new LlamaEngine.ChatRequest(null, "Tell me more.", null, null));
- *     System.out.printf("role=%s content=%s session=%s count=%d%n",
- *         resp.role, resp.content, resp.sessionId, resp.messageCount);
- *
- *     // Inject tool result before user message
- *     engine.chat("sid-1", new LlamaEngine.ChatRequest(
- *         null, "What was the result?", null, "{\"result\":42}"));
+ *     // Richer schema response — returns a Map with role, content,
+ *     // sessionId, and messageCount.
+ *     Map<String, Object> resp = engine.chatWithObject("sid-1", List.of(
+ *         new LlamaEngine.ChatMessage("user", "Tell me more.")));
+ *     System.out.println(resp.get("role") + " " + resp.get("sessionId"));
  *
  *     // Clear session history
  *     engine.chatSessionClear("sid-1");
@@ -42,100 +44,34 @@ public final class LlamaEngine implements AutoCloseable {
     // -----------------------------------------------------------------------
 
     /**
-     * Input to {@link #chat} and {@link #chatWithObject}.
+     * A role+content message — both the element type of the input list
+     * passed to {@link #chat} and {@link #chatWithObject}, and the
+     * response type returned by {@link #chat}.
      *
-     * <p>{@code userMessage} is the main required field.
-     * All other fields are optional and may be {@code null} or {@code ""}.
-     */
-    public static final class ChatRequest {
-
-        /** Sets or replaces the session's system prompt. Null/empty to leave unchanged. */
-        public final String systemMessage;
-
-        /** The user turn for this call. */
-        public final String userMessage;
-
-        /**
-         * Injects a prior assistant turn into the session before {@code userMessage}
-         * (for few-shot context / correction). Null/empty to skip.
-         */
-        public final String assistantMessage;
-
-        /**
-         * Injects a tool-use response (role "tool") into the session before
-         * {@code userMessage}. Null/empty to skip.
-         */
-        public final String toolMessage;
-
-        /**
-         * Full constructor.
-         *
-         * @param systemMessage    optional system prompt
-         * @param userMessage      user turn (main input)
-         * @param assistantMessage optional prior assistant turn to inject
-         * @param toolMessage      optional tool response to inject
-         */
-        public ChatRequest(String systemMessage,
-                           String userMessage,
-                           String assistantMessage,
-                           String toolMessage) {
-            this.systemMessage    = systemMessage    != null ? systemMessage    : "";
-            this.userMessage      = userMessage      != null ? userMessage      : "";
-            this.assistantMessage = assistantMessage != null ? assistantMessage : "";
-            this.toolMessage      = toolMessage      != null ? toolMessage      : "";
-        }
-
-        /** Convenience constructor for a simple user message. */
-        public ChatRequest(String userMessage) {
-            this(null, userMessage, null, null);
-        }
-
-        /** Convenience constructor for system + user message. */
-        public ChatRequest(String systemMessage, String userMessage) {
-            this(systemMessage, userMessage, null, null);
-        }
-    }
-
-    /**
-     * The response returned by {@link #chat}.
-     * Always has {@code role = "assistant"}.
+     * <p>Supported roles: {@code system}, {@code user}, {@code assistant},
+     * {@code tool}.
      */
     public static final class ChatMessage {
-        /** Message role — always {@code "assistant"}. */
+        /** Message role. */
         public final String role;
-        /** The assistant's reply. */
+        /** Message content. */
         public final String content;
 
-        ChatMessage(String role, String content) {
-            this.role    = role;
-            this.content = content;
-        }
-    }
-
-    /**
-     * The richer response returned by {@link #chatWithObject}.
-     * Includes session metadata in addition to the assistant reply.
-     */
-    public static final class ChatResponse {
-        /** Message role — always {@code "assistant"}. */
-        public final String role;
-        /** The assistant's reply. */
-        public final String content;
-        /** The session ID this response belongs to. */
-        public final String sessionId;
-        /** Total number of messages in the session after this turn. */
-        public final int    messageCount;
-
-        ChatResponse(String role, String content, String sessionId, int messageCount) {
-            this.role         = role;
-            this.content      = content;
-            this.sessionId    = sessionId;
-            this.messageCount = messageCount;
+        /**
+         * Create a message with the given role and content.
+         * Null values are normalised to empty strings.
+         *
+         * @param role    message role (e.g. "user", "system", "assistant", "tool")
+         * @param content message text
+         */
+        public ChatMessage(String role, String content) {
+            this.role    = role    != null ? role    : "";
+            this.content = content != null ? content : "";
         }
     }
 
     // -----------------------------------------------------------------------
-    // JSON parsing helpers — no external dependency required
+    // JSON helpers — no external dependency required
     // -----------------------------------------------------------------------
 
     /**
@@ -189,6 +125,43 @@ public final class LlamaEngine implements AutoCloseable {
         } catch (NumberFormatException e) {
             return 0;
         }
+    }
+
+    /** Quote and JSON-escape a string value. */
+    private static String jsonQuote(String s) {
+        if (s == null) s = "";
+        StringBuilder sb = new StringBuilder("\"");
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            switch (c) {
+                case '"':  sb.append("\\\""); break;
+                case '\\': sb.append("\\\\"); break;
+                case '\n': sb.append("\\n");  break;
+                case '\r': sb.append("\\r");  break;
+                case '\t': sb.append("\\t");  break;
+                default:   sb.append(c);      break;
+            }
+        }
+        sb.append('"');
+        return sb.toString();
+    }
+
+    /** Serialize a List of ChatMessage to a JSON array string. */
+    private static String toMessagesJson(List<ChatMessage> messages) {
+        StringBuilder sb = new StringBuilder("[");
+        if (messages != null) {
+            for (int i = 0; i < messages.size(); i++) {
+                ChatMessage m = messages.get(i);
+                if (i > 0) sb.append(',');
+                sb.append("{\"role\":");
+                sb.append(jsonQuote(m.role));
+                sb.append(",\"content\":");
+                sb.append(jsonQuote(m.content));
+                sb.append('}');
+            }
+        }
+        sb.append(']');
+        return sb.toString();
     }
 
     // -----------------------------------------------------------------------
@@ -259,86 +232,67 @@ public final class LlamaEngine implements AutoCloseable {
      * Session-based chat turn.
      *
      * <p>The engine maintains conversation history keyed by {@code sessionId}.
-     * The {@link ChatRequest} may contain any combination of
-     * {@code systemMessage}, {@code userMessage}, {@code assistantMessage}, and
-     * {@code toolMessage}; all non-empty fields are appended to the session in
-     * that order before running inference.
+     * {@code messages} is an ordered list of {@link ChatMessage} values to
+     * append to the session history for this turn.  Supported roles:
+     * {@code system}, {@code user}, {@code assistant}, {@code tool}.
+     * A {@code system} entry sets or replaces the session system prompt.
      *
      * <p>The model's built-in chat template is applied to the full session history.
      * The assistant response is automatically appended to the session history.
      *
      * @param sessionId session identifier (created automatically on first call)
-     * @param request   chat request containing the message fields
-     * @return a {@link ChatMessage} with the assistant's reply
+     * @param messages  ordered list of messages to append for this turn
+     * @return a {@link ChatMessage} with {@code role="assistant"} and the reply
      * @throws IllegalArgumentException if sessionId is null or blank
      * @throws IllegalStateException    if the engine has been closed
      */
-    public ChatMessage chat(String sessionId, ChatRequest request) {
+    public ChatMessage chat(String sessionId, List<ChatMessage> messages) {
         ensureOpen();
         if (sessionId == null || sessionId.isBlank()) {
             throw new IllegalArgumentException("sessionId must not be null or blank");
         }
-        if (request == null) request = new ChatRequest("");
-
-        Pointer result = lib.llama_engine_chat(
-                handle,
-                sessionId,
-                request.systemMessage,
-                request.userMessage,
-                request.assistantMessage,
-                request.toolMessage);
-
-        if (result == null) throw new RuntimeException("llama_engine_chat returned null");
-
+        String messagesJson = toMessagesJson(messages);
+        Pointer result = lib.llama_engine_chat_messages(handle, sessionId, messagesJson);
+        if (result == null) throw new RuntimeException("llama_engine_chat_messages returned null");
         try {
-            String json    = result.getString(0, "UTF-8");
-            String role    = jsonString(json, "role");
-            String content = jsonString(json, "content");
-            return new ChatMessage(role, content);
+            String json = result.getString(0, "UTF-8");
+            return new ChatMessage(jsonString(json, "role"), jsonString(json, "content"));
         } finally {
             lib.llama_engine_free_string(result);
         }
     }
 
     /**
-     * Session-based chat turn that returns a richer schema response.
+     * Session-based chat turn that returns a richer JSON object.
      *
-     * <p>Same as {@link #chat} but the returned {@link ChatResponse} also
-     * contains the {@code sessionId} and the total {@code messageCount} in the
-     * session after this turn.
+     * <p>Same as {@link #chat} but the returned map also contains
+     * {@code sessionId} (String) and {@code messageCount} (Integer).
      *
      * @param sessionId session identifier (created automatically on first call)
-     * @param request   chat request containing the message fields
-     * @return a {@link ChatResponse} with the assistant's reply and session metadata
+     * @param messages  ordered list of messages to append for this turn
+     * @return a map with keys {@code role}, {@code content}, {@code sessionId},
+     *         and {@code messageCount}
      * @throws IllegalArgumentException if sessionId is null or blank
      * @throws IllegalStateException    if the engine has been closed
      */
-    public ChatResponse chatWithObject(String sessionId, ChatRequest request) {
+    public Map<String, Object> chatWithObject(String sessionId, List<ChatMessage> messages) {
         ensureOpen();
         if (sessionId == null || sessionId.isBlank()) {
             throw new IllegalArgumentException("sessionId must not be null or blank");
         }
-        if (request == null) request = new ChatRequest("");
-
-        Pointer result = lib.llama_engine_chat_with_object(
-                handle,
-                sessionId,
-                request.systemMessage,
-                request.userMessage,
-                request.assistantMessage,
-                request.toolMessage);
-
+        String messagesJson = toMessagesJson(messages);
+        Pointer result = lib.llama_engine_chat_with_object_messages(handle, sessionId, messagesJson);
         if (result == null) {
-            throw new RuntimeException("llama_engine_chat_with_object returned null");
+            throw new RuntimeException("llama_engine_chat_with_object_messages returned null");
         }
-
         try {
-            String json         = result.getString(0, "UTF-8");
-            String role         = jsonString(json, "role");
-            String content      = jsonString(json, "content");
-            String sid          = jsonString(json, "sessionId");
-            int    messageCount = jsonInt(json, "messageCount");
-            return new ChatResponse(role, content, sid, messageCount);
+            String json = result.getString(0, "UTF-8");
+            Map<String, Object> map = new LinkedHashMap<>();
+            map.put("role",         jsonString(json, "role"));
+            map.put("content",      jsonString(json, "content"));
+            map.put("sessionId",    jsonString(json, "sessionId"));
+            map.put("messageCount", jsonInt(json, "messageCount"));
+            return map;
         } finally {
             lib.llama_engine_free_string(result);
         }

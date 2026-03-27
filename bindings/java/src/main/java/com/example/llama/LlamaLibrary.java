@@ -21,17 +21,31 @@ interface LlamaLibrary extends Library {
     void    llama_engine_free_string(Pointer str);
     void    llama_engine_destroy(Pointer engine);
 
-    /* ---- chat ---- */
+    /* ---- chat (array-based — primary interface) ---- */
 
     /**
-     * Session-based chat. Returns JSON: {@code {"role":"assistant","content":"..."}}
+     * Session-based chat accepting messages as a JSON array.
+     * Returns JSON: {@code {"role":"assistant","content":"..."}}
      *
-     * @param sessionId        conversation identifier
-     * @param systemMessage    optional system prompt (null or "" to skip)
-     * @param userMessage      the user turn
-     * @param assistantMessage optional prior assistant turn to inject (null or "")
-     * @param toolMessage      optional tool response to inject (null or "")
+     * @param sessionId    conversation identifier
+     * @param messagesJson JSON array of {role, content} objects
      */
+    Pointer llama_engine_chat_messages(
+            Pointer engine,
+            String  sessionId,
+            String  messagesJson);
+
+    /**
+     * Session-based chat with richer schema response.
+     * Returns JSON: {@code {"role":"assistant","content":"...","sessionId":"...","messageCount":N}}
+     */
+    Pointer llama_engine_chat_with_object_messages(
+            Pointer engine,
+            String  sessionId,
+            String  messagesJson);
+
+    /* ---- legacy chat helpers (kept for direct C callers) ---- */
+
     Pointer llama_engine_chat(
             Pointer engine,
             String  sessionId,
@@ -40,10 +54,6 @@ interface LlamaLibrary extends Library {
             String  assistantMessage,
             String  toolMessage);
 
-    /**
-     * Session-based chat with schema response.
-     * Returns JSON: {@code {"role":"assistant","content":"...","sessionId":"...","messageCount":N}}
-     */
     Pointer llama_engine_chat_with_object(
             Pointer engine,
             String  sessionId,

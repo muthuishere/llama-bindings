@@ -13,31 +13,37 @@
 // // Raw completion (no chat template)
 // result, err := engine.Complete("Say hello.")
 //
-// // Session-based chat — returns a ChatMessage
+// // Session-based chat — pass an ordered slice of Message values,
+// // get back a Message{Role:"assistant", Content:"..."}.
 //
-//	msg, err := engine.Chat("sid-1", llama.ChatRequest{
-//	   SystemMessage: "You are helpful.",
-//	   UserMessage:   "What is 2+2?",
+//	msg, err := engine.Chat("sid-1", []llama.Message{
+//	   {Role: "system", Content: "You are helpful."},
+//	   {Role: "user",   Content: "What is 2+2?"},
 //	})
 //
 // fmt.Println(msg.Content)
 //
-// // Session-based chat with schema response (includes session metadata)
+// // Multi-turn: only pass the new messages each turn.
 //
-//	resp, err := engine.ChatWithObject("sid-1", llama.ChatRequest{
-//	   UserMessage: "Tell me more.",
+//	msg, err = engine.Chat("sid-1", []llama.Message{
+//	   {Role: "user", Content: "Tell me more."},
 //	})
 //
-// fmt.Printf("role=%s content=%s session=%s count=%d\n",
+// // Inject a tool response before the user message.
 //
-//	resp.Role, resp.Content, resp.SessionID, resp.MessageCount)
-//
-// // Inject a tool response into the conversation
-//
-//	msg, err = engine.Chat("sid-1", llama.ChatRequest{
-//	   ToolMessage: `{"result": 42}`,
-//	   UserMessage: "What was the result?",
+//	msg, err = engine.Chat("sid-1", []llama.Message{
+//	   {Role: "tool", Content: `{"result": 42}`},
+//	   {Role: "user", Content: "What was the result?"},
 //	})
+//
+// // Richer schema response — returns a map with role, content,
+// // sessionId, and messageCount.
+//
+//	obj, err := engine.ChatWithObject("sid-1", []llama.Message{
+//	   {Role: "user", Content: "Hello."},
+//	})
+//
+// fmt.Println(obj["role"], obj["content"], obj["sessionId"], obj["messageCount"])
 //
 // // Clear session history
 // engine.ChatSessionClear("sid-1")
@@ -61,38 +67,14 @@ import (
 	"unsafe"
 )
 
-// ChatRequest is the input to Chat and ChatWithObject.
-// UserMessage is the main required field; all others are optional.
-type ChatRequest struct {
-	// SystemMessage sets or replaces the session's system prompt.
-	// Pass "" to leave the existing system prompt unchanged.
-	SystemMessage string
-
-	// UserMessage is the user turn for this call.
-	UserMessage string
-
-	// AssistantMessage injects a prior assistant turn into the session
-	// before UserMessage (useful for few-shot context or correction).
-	AssistantMessage string
-
-	// ToolMessage injects a tool-use response (role "tool") into the
-	// session before UserMessage.
-	ToolMessage string
-}
-
-// ChatMessage is the response returned by Chat.
-type ChatMessage struct {
+// Message is the standard chat message type — a role+content pair.
+// It is used both as the element type of the input slice passed to
+// Chat and ChatWithObject, and as the response type returned by Chat.
+//
+// Supported roles: "system", "user", "assistant", "tool".
+type Message struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
-}
-
-// ChatResponse is the richer response returned by ChatWithObject.
-// It includes session metadata in addition to the assistant reply.
-type ChatResponse struct {
-	Role         string `json:"role"`
-	Content      string `json:"content"`
-	SessionID    string `json:"sessionId"`
-	MessageCount int    `json:"messageCount"`
 }
 
 // Engine wraps an opaque llama_engine_t handle.
@@ -139,87 +121,84 @@ func (e *Engine) Complete(prompt string) (string, error) {
 	return C.GoString(cResult), nil
 }
 
-// Chat performs a session-based chat turn and returns a ChatMessage.
+// Chat performs a session-based chat turn and returns the assistant reply
+// as a Message{Role:"assistant", Content:"..."}.
 //
-// The engine maintains conversation history keyed by sessionID.
-// The ChatRequest may contain any combination of SystemMessage, UserMessage,
-// AssistantMessage, and ToolMessage; all non-empty fields are appended to the
-// session in that order before running inference.
+// messages is an ordered slice of Message values to append to the session
+// history for this turn.  Supported roles: "system", "user", "assistant",
+// "tool".  A "system" entry sets or replaces the session system prompt.
 //
 // The model's built-in chat template is applied to the full session history.
 // The assistant response is automatically appended to the session history.
-func (e *Engine) Chat(sessionID string, req ChatRequest) (ChatMessage, error) {
+func (e *Engine) Chat(sessionID string, messages []Message) (Message, error) {
 	if e == nil || e.handle == nil {
-		return ChatMessage{}, errors.New("llama: engine is not initialised")
+		return Message{}, errors.New("llama: engine is not initialised")
 	}
 	if sessionID == "" {
-		return ChatMessage{}, errors.New("llama: sessionID must not be empty")
+		return Message{}, errors.New("llama: sessionID must not be empty")
+	}
+
+	data, err := json.Marshal(messages)
+	if err != nil {
+		return Message{}, errors.New("llama: failed to serialize messages")
 	}
 
 	cSID := C.CString(sessionID)
-	cSys := C.CString(req.SystemMessage)
-	cUser := C.CString(req.UserMessage)
-	cAsst := C.CString(req.AssistantMessage)
-	cTool := C.CString(req.ToolMessage)
-	defer func() {
-		C.free(unsafe.Pointer(cSID))
-		C.free(unsafe.Pointer(cSys))
-		C.free(unsafe.Pointer(cUser))
-		C.free(unsafe.Pointer(cAsst))
-		C.free(unsafe.Pointer(cTool))
-	}()
+	cMsgs := C.CString(string(data))
+	defer C.free(unsafe.Pointer(cSID))
+	defer C.free(unsafe.Pointer(cMsgs))
 
-	cResult := C.llama_engine_chat(e.handle, cSID, cSys, cUser, cAsst, cTool)
+	cResult := C.llama_engine_chat_messages(e.handle, cSID, cMsgs)
 	if cResult == nil {
-		return ChatMessage{}, errors.New("llama: chat failed")
+		return Message{}, errors.New("llama: chat failed")
 	}
 	defer C.llama_engine_free_string(cResult)
 
-	var msg ChatMessage
+	var msg Message
 	if err := json.Unmarshal([]byte(C.GoString(cResult)), &msg); err != nil {
-		return ChatMessage{}, errors.New("llama: failed to parse chat response")
+		return Message{}, errors.New("llama: failed to parse chat response")
 	}
 	return msg, nil
 }
 
-// ChatWithObject performs a session-based chat turn and returns a ChatResponse
-// that includes session metadata (SessionID and MessageCount) in addition to
-// the assistant reply.
+// ChatWithObject performs a session-based chat turn and returns the response
+// as a map representing the JSON object.  The map always contains:
 //
-// See Chat for details on how the request fields are handled.
-func (e *Engine) ChatWithObject(sessionID string, req ChatRequest) (ChatResponse, error) {
+// "role"         → string  (always "assistant")
+// "content"      → string  (the generated reply)
+// "sessionId"    → string  (the session identifier)
+// "messageCount" → float64 (total messages in the session after this turn)
+//
+// See Chat for details on how messages are applied to the session.
+func (e *Engine) ChatWithObject(sessionID string, messages []Message) (map[string]interface{}, error) {
 	if e == nil || e.handle == nil {
-		return ChatResponse{}, errors.New("llama: engine is not initialised")
+		return nil, errors.New("llama: engine is not initialised")
 	}
 	if sessionID == "" {
-		return ChatResponse{}, errors.New("llama: sessionID must not be empty")
+		return nil, errors.New("llama: sessionID must not be empty")
+	}
+
+	data, err := json.Marshal(messages)
+	if err != nil {
+		return nil, errors.New("llama: failed to serialize messages")
 	}
 
 	cSID := C.CString(sessionID)
-	cSys := C.CString(req.SystemMessage)
-	cUser := C.CString(req.UserMessage)
-	cAsst := C.CString(req.AssistantMessage)
-	cTool := C.CString(req.ToolMessage)
-	defer func() {
-		C.free(unsafe.Pointer(cSID))
-		C.free(unsafe.Pointer(cSys))
-		C.free(unsafe.Pointer(cUser))
-		C.free(unsafe.Pointer(cAsst))
-		C.free(unsafe.Pointer(cTool))
-	}()
+	cMsgs := C.CString(string(data))
+	defer C.free(unsafe.Pointer(cSID))
+	defer C.free(unsafe.Pointer(cMsgs))
 
-	cResult := C.llama_engine_chat_with_object(
-		e.handle, cSID, cSys, cUser, cAsst, cTool)
+	cResult := C.llama_engine_chat_with_object_messages(e.handle, cSID, cMsgs)
 	if cResult == nil {
-		return ChatResponse{}, errors.New("llama: chatWithObject failed")
+		return nil, errors.New("llama: chatWithObject failed")
 	}
 	defer C.llama_engine_free_string(cResult)
 
-	var resp ChatResponse
-	if err := json.Unmarshal([]byte(C.GoString(cResult)), &resp); err != nil {
-		return ChatResponse{}, errors.New("llama: failed to parse chatWithObject response")
+	var result map[string]interface{}
+	if err := json.Unmarshal([]byte(C.GoString(cResult)), &result); err != nil {
+		return nil, errors.New("llama: failed to parse chatWithObject response")
 	}
-	return resp, nil
+	return result, nil
 }
 
 // ChatSessionClear removes all history for the named session (including the

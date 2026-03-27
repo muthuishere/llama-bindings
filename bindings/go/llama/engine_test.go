@@ -55,7 +55,7 @@ func TestClose_NilEngine(t *testing.T) {
 
 func TestChat_NilEngine(t *testing.T) {
 	var e *llama.Engine
-	_, err := e.Chat("sid", llama.ChatRequest{UserMessage: "hi"})
+	_, err := e.Chat("sid", []llama.Message{{Role: "user", Content: "hi"}})
 	if err == nil {
 		t.Fatal("expected error from nil engine, got nil")
 	}
@@ -63,7 +63,7 @@ func TestChat_NilEngine(t *testing.T) {
 
 func TestChat_EmptySessionID(t *testing.T) {
 	var e *llama.Engine
-	_, err := e.Chat("", llama.ChatRequest{UserMessage: "hi"})
+	_, err := e.Chat("", []llama.Message{{Role: "user", Content: "hi"}})
 	if err == nil {
 		t.Fatal("expected error for empty session ID, got nil")
 	}
@@ -71,7 +71,7 @@ func TestChat_EmptySessionID(t *testing.T) {
 
 func TestChatWithObject_NilEngine(t *testing.T) {
 	var e *llama.Engine
-	_, err := e.ChatWithObject("sid", llama.ChatRequest{UserMessage: "hi"})
+	_, err := e.ChatWithObject("sid", []llama.Message{{Role: "user", Content: "hi"}})
 	if err == nil {
 		t.Fatal("expected error from nil engine, got nil")
 	}
@@ -79,7 +79,7 @@ func TestChatWithObject_NilEngine(t *testing.T) {
 
 func TestChatWithObject_EmptySessionID(t *testing.T) {
 	var e *llama.Engine
-	_, err := e.ChatWithObject("", llama.ChatRequest{UserMessage: "hi"})
+	_, err := e.ChatWithObject("", []llama.Message{{Role: "user", Content: "hi"}})
 	if err == nil {
 		t.Fatal("expected error for empty session ID, got nil")
 	}
@@ -169,16 +169,16 @@ func TestCreateDestroyCycle(t *testing.T) {
 // Chat integration tests
 // ---------------------------------------------------------------------------
 
-func TestChat_WithSystem_ReturnsChatMessage(t *testing.T) {
+func TestChat_WithSystem_ReturnsMessage(t *testing.T) {
 	engine, err := llama.Load(modelPath(t))
 	if err != nil {
 		t.Fatalf("Load failed: %v", err)
 	}
 	defer engine.Close()
 
-	msg, err := engine.Chat("sid-go-1", llama.ChatRequest{
-		SystemMessage: "You are a helpful assistant.",
-		UserMessage:   "Say hello.",
+	msg, err := engine.Chat("sid-go-1", []llama.Message{
+		{Role: "system", Content: "You are a helpful assistant."},
+		{Role: "user", Content: "Say hello."},
 	})
 	if err != nil {
 		t.Fatalf("Chat failed: %v", err)
@@ -192,15 +192,15 @@ func TestChat_WithSystem_ReturnsChatMessage(t *testing.T) {
 	t.Logf("Chat response: role=%s content=%s", msg.Role, msg.Content)
 }
 
-func TestChat_NoSystem_ReturnsChatMessage(t *testing.T) {
+func TestChat_NoSystem_ReturnsMessage(t *testing.T) {
 	engine, err := llama.Load(modelPath(t))
 	if err != nil {
 		t.Fatalf("Load failed: %v", err)
 	}
 	defer engine.Close()
 
-	msg, err := engine.Chat("sid-go-2", llama.ChatRequest{
-		UserMessage: "Say hello.",
+	msg, err := engine.Chat("sid-go-2", []llama.Message{
+		{Role: "user", Content: "Say hello."},
 	})
 	if err != nil {
 		t.Fatalf("Chat (no system) failed: %v", err)
@@ -223,17 +223,17 @@ func TestChat_MultiTurn(t *testing.T) {
 
 	sid := "sid-go-mt"
 
-	turn1, err := engine.Chat(sid, llama.ChatRequest{
-		SystemMessage: "You are a helpful assistant.",
-		UserMessage:   "Say hello.",
+	turn1, err := engine.Chat(sid, []llama.Message{
+		{Role: "system", Content: "You are a helpful assistant."},
+		{Role: "user", Content: "Say hello."},
 	})
 	if err != nil {
 		t.Fatalf("Chat turn 1 failed: %v", err)
 	}
 	t.Logf("Turn 1: %s", turn1.Content)
 
-	turn2, err := engine.Chat(sid, llama.ChatRequest{
-		UserMessage: "What did you just say?",
+	turn2, err := engine.Chat(sid, []llama.Message{
+		{Role: "user", Content: "What did you just say?"},
 	})
 	if err != nil {
 		t.Fatalf("Chat turn 2 failed: %v", err)
@@ -251,18 +251,18 @@ func TestChat_WithAssistantMessage(t *testing.T) {
 	}
 	defer engine.Close()
 
-	msg, err := engine.Chat("sid-go-asst", llama.ChatRequest{
-		SystemMessage:    "You are helpful.",
-		AssistantMessage: "I said hello earlier.",
-		UserMessage:      "What did you say before?",
+	msg, err := engine.Chat("sid-go-asst", []llama.Message{
+		{Role: "system", Content: "You are helpful."},
+		{Role: "assistant", Content: "I said hello earlier."},
+		{Role: "user", Content: "What did you say before?"},
 	})
 	if err != nil {
-		t.Fatalf("Chat with AssistantMessage failed: %v", err)
+		t.Fatalf("Chat with assistant message failed: %v", err)
 	}
 	if strings.TrimSpace(msg.Content) == "" {
 		t.Fatal("expected non-empty content")
 	}
-	t.Logf("Chat with AssistantMessage: %s", msg.Content)
+	t.Logf("Chat with assistant message: %s", msg.Content)
 }
 
 func TestChat_WithToolMessage(t *testing.T) {
@@ -272,21 +272,21 @@ func TestChat_WithToolMessage(t *testing.T) {
 	}
 	defer engine.Close()
 
-	msg, err := engine.Chat("sid-go-tool", llama.ChatRequest{
-		SystemMessage: "You are a helpful assistant with tool access.",
-		ToolMessage:   `{"weather": "sunny", "temperature": "22C"}`,
-		UserMessage:   "What is the weather like?",
+	msg, err := engine.Chat("sid-go-tool", []llama.Message{
+		{Role: "system", Content: "You are a helpful assistant with tool access."},
+		{Role: "tool", Content: `{"weather": "sunny", "temperature": "22C"}`},
+		{Role: "user", Content: "What is the weather like?"},
 	})
 	if err != nil {
-		t.Fatalf("Chat with ToolMessage failed: %v", err)
+		t.Fatalf("Chat with tool message failed: %v", err)
 	}
 	if strings.TrimSpace(msg.Content) == "" {
 		t.Fatal("expected non-empty content")
 	}
-	t.Logf("Chat with ToolMessage: %s", msg.Content)
+	t.Logf("Chat with tool message: %s", msg.Content)
 }
 
-func TestChatWithObject_ReturnsSchemaResponse(t *testing.T) {
+func TestChatWithObject_ReturnsJsonObject(t *testing.T) {
 	engine, err := llama.Load(modelPath(t))
 	if err != nil {
 		t.Fatalf("Load failed: %v", err)
@@ -294,27 +294,27 @@ func TestChatWithObject_ReturnsSchemaResponse(t *testing.T) {
 	defer engine.Close()
 
 	sid := "sid-go-obj"
-	resp, err := engine.ChatWithObject(sid, llama.ChatRequest{
-		SystemMessage: "You are a helpful assistant.",
-		UserMessage:   "Say hello in one sentence.",
+	resp, err := engine.ChatWithObject(sid, []llama.Message{
+		{Role: "system", Content: "You are a helpful assistant."},
+		{Role: "user", Content: "Say hello in one sentence."},
 	})
 	if err != nil {
 		t.Fatalf("ChatWithObject failed: %v", err)
 	}
-	if resp.Role != "assistant" {
-		t.Errorf("expected role=assistant, got %q", resp.Role)
+	if resp["role"].(string) != "assistant" {
+		t.Errorf("expected role=assistant, got %q", resp["role"])
 	}
-	if strings.TrimSpace(resp.Content) == "" {
+	if strings.TrimSpace(resp["content"].(string)) == "" {
 		t.Fatal("expected non-empty content")
 	}
-	if resp.SessionID != sid {
-		t.Errorf("expected sessionId=%q, got %q", sid, resp.SessionID)
+	if resp["sessionId"].(string) != sid {
+		t.Errorf("expected sessionId=%q, got %q", sid, resp["sessionId"])
 	}
-	if resp.MessageCount <= 0 {
-		t.Errorf("expected messageCount > 0, got %d", resp.MessageCount)
+	if resp["messageCount"].(float64) <= 0 {
+		t.Errorf("expected messageCount > 0, got %v", resp["messageCount"])
 	}
-	t.Logf("ChatWithObject: role=%s content=%s sessionId=%s count=%d",
-		resp.Role, resp.Content, resp.SessionID, resp.MessageCount)
+	t.Logf("ChatWithObject: role=%v content=%v sessionId=%v count=%v",
+		resp["role"], resp["content"], resp["sessionId"], resp["messageCount"])
 }
 
 func TestChatWithObject_MultiTurn_MessageCountGrows(t *testing.T) {
@@ -326,21 +326,25 @@ func TestChatWithObject_MultiTurn_MessageCountGrows(t *testing.T) {
 
 	sid := "sid-go-obj-mt"
 
-	r1, err := engine.ChatWithObject(sid, llama.ChatRequest{UserMessage: "Hello."})
+	r1, err := engine.ChatWithObject(sid, []llama.Message{
+		{Role: "user", Content: "Hello."},
+	})
 	if err != nil {
 		t.Fatalf("ChatWithObject turn 1 failed: %v", err)
 	}
 
-	r2, err := engine.ChatWithObject(sid, llama.ChatRequest{UserMessage: "How are you?"})
+	r2, err := engine.ChatWithObject(sid, []llama.Message{
+		{Role: "user", Content: "How are you?"},
+	})
 	if err != nil {
 		t.Fatalf("ChatWithObject turn 2 failed: %v", err)
 	}
 
-	if r2.MessageCount <= r1.MessageCount {
-		t.Errorf("expected messageCount to grow: turn1=%d turn2=%d",
-			r1.MessageCount, r2.MessageCount)
+	if r2["messageCount"].(float64) <= r1["messageCount"].(float64) {
+		t.Errorf("expected messageCount to grow: turn1=%v turn2=%v",
+			r1["messageCount"], r2["messageCount"])
 	}
-	t.Logf("messageCount: turn1=%d turn2=%d", r1.MessageCount, r2.MessageCount)
+	t.Logf("messageCount: turn1=%v turn2=%v", r1["messageCount"], r2["messageCount"])
 }
 
 func TestChatSessionClear_ResetsHistory(t *testing.T) {
@@ -351,14 +355,18 @@ func TestChatSessionClear_ResetsHistory(t *testing.T) {
 	defer engine.Close()
 
 	sid := "sid-go-clear"
-	_, err = engine.Chat(sid, llama.ChatRequest{UserMessage: "Say hello."})
+	_, err = engine.Chat(sid, []llama.Message{
+		{Role: "user", Content: "Say hello."},
+	})
 	if err != nil {
 		t.Fatalf("Chat before clear failed: %v", err)
 	}
 
 	engine.ChatSessionClear(sid)
 
-	msg, err := engine.Chat(sid, llama.ChatRequest{UserMessage: "Say hello again."})
+	msg, err := engine.Chat(sid, []llama.Message{
+		{Role: "user", Content: "Say hello again."},
+	})
 	if err != nil {
 		t.Fatalf("Chat after clear failed: %v", err)
 	}

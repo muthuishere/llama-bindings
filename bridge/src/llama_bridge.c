@@ -386,6 +386,207 @@ static char* _session_chat_run(struct llama_engine* engine,
 }
 
 /* =========================================================================
+ * JSON message-array parser
+ * ====================================================================== */
+
+/* Skip ASCII whitespace. */
+static const char* _json_skip_ws(const char* p) {
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+    return p;
+}
+
+/*
+ * Parse a JSON string value starting at the opening '"'.
+ * Advances *pp past the closing '"'.
+ * Returns a newly malloc'd C string, or NULL on error.
+ */
+static char* _json_parse_string(const char** pp) {
+    const char* p = *pp;
+    if (*p != '"') return NULL;
+    p++;  /* skip opening '"' */
+
+    size_t cap = 64, len = 0;
+    char*  out = (char*)malloc(cap);
+    if (!out) return NULL;
+
+    while (*p != '\0' && *p != '"') {
+        char c = *p;
+        if (c == '\\' && *(p + 1) != '\0') {
+            p++;
+            switch (*p) {
+                case '"':  c = '"';  break;
+                case '\\': c = '\\'; break;
+                case '/':  c = '/';  break;
+                case 'n':  c = '\n'; break;
+                case 'r':  c = '\r'; break;
+                case 't':  c = '\t'; break;
+                default:   c = *p;   break;
+            }
+        }
+        if (len + 1 >= cap) {
+            cap *= 2;
+            char* tmp = (char*)realloc(out, cap);
+            if (!tmp) { free(out); return NULL; }
+            out = tmp;
+        }
+        out[len++] = c;
+        p++;
+    }
+    if (*p == '"') p++;  /* skip closing '"' */
+    out[len] = '\0';
+    *pp = p;
+    return out;
+}
+
+/*
+ * Parse [{"role":"...","content":"..."},...] into parallel role/content
+ * arrays.  Returns the number of entries parsed (>=0), or -1 on error.
+ * Each non-NULL roles[i] and contents[i] must be freed by the caller.
+ */
+static int _parse_messages_json(const char* json,
+                                 char**      roles,
+                                 char**      contents,
+                                 int         max_msgs) {
+    if (!json) return 0;
+    const char* p = _json_skip_ws(json);
+    if (*p != '[') return -1;
+    p++;
+
+    int count = 0;
+    while (count < max_msgs) {
+        p = _json_skip_ws(p);
+        if (*p == ']') break;
+        if (*p == ',') { p++; continue; }
+        if (*p != '{') return -1;
+        p++;  /* skip '{' */
+
+        char* role    = NULL;
+        char* content = NULL;
+        int   done    = 0;
+
+        while (!done) {
+            p = _json_skip_ws(p);
+            if (*p == '}') { p++; done = 1; break; }
+            if (*p == ',') { p++; continue; }
+            if (*p != '"') { free(role); free(content); return -1; }
+
+            char* key = _json_parse_string(&p);
+            if (!key) { free(role); free(content); return -1; }
+
+            p = _json_skip_ws(p);
+            if (*p != ':') { free(key); free(role); free(content); return -1; }
+            p++;
+            p = _json_skip_ws(p);
+
+            if (*p == '"') {
+                char* val = _json_parse_string(&p);
+                if (!val) { free(key); free(role); free(content); return -1; }
+                if (strcmp(key, "role") == 0) {
+                    free(role); role = val;
+                } else if (strcmp(key, "content") == 0) {
+                    free(content); content = val;
+                } else {
+                    free(val);
+                }
+            } else {
+                /* Skip non-string JSON value (number, bool, nested object/array).
+                 * Handles embedded strings correctly to avoid false brace matches. */
+                int depth = 0;
+                while (*p) {
+                    if (*p == '"') {
+                        /* skip string — must not treat braces inside as depth */
+                        p++;
+                        while (*p && *p != '"') {
+                            if (*p == '\\' && *(p + 1) != '\0') p++;
+                            p++;
+                        }
+                        if (*p == '"') p++;
+                    } else if (*p == '{' || *p == '[') {
+                        depth++;
+                        p++;
+                    } else if (*p == '}' || *p == ']') {
+                        if (depth == 0) break;
+                        depth--;
+                        p++;
+                    } else if (*p == ',' && depth == 0) {
+                        break;
+                    } else {
+                        p++;
+                    }
+                }
+            }
+            free(key);
+        }
+
+        if (done && role && content) {
+            roles[count]    = role;
+            contents[count] = content;
+            count++;
+        } else {
+            free(role);
+            free(content);
+        }
+    }
+
+    return count;
+}
+
+/*
+ * Session chat using a JSON messages array.
+ * Each entry is appended to the session in order; "system" entries set or
+ * replace the session system prompt.  Returns heap-allocated assistant text
+ * (caller must free), or NULL on failure.
+ */
+static char* _session_chat_run_messages(struct llama_engine* engine,
+                                         const char*          session_id,
+                                         const char*          messages_json) {
+    if (!session_id || session_id[0] == '\0') return NULL;
+    if (!messages_json || messages_json[0] == '\0') return NULL;
+
+    char* roles[BRIDGE_MAX_SESSION_MSGS];
+    char* contents[BRIDGE_MAX_SESSION_MSGS];
+    int n = _parse_messages_json(messages_json, roles, contents,
+                                  BRIDGE_MAX_SESSION_MSGS);
+    if (n <= 0) return NULL;
+
+    struct bridge_session* s = _session_get_or_create(engine, session_id);
+    if (!s) {
+        for (int i = 0; i < n; i++) { free(roles[i]); free(contents[i]); }
+        return NULL;
+    }
+
+    for (int i = 0; i < n; i++) {
+        if (strcmp(roles[i], "system") == 0) {
+            _session_set_system(s, contents[i]);
+        } else {
+            _session_add(s, roles[i], contents[i]);
+        }
+        free(roles[i]);
+        free(contents[i]);
+    }
+
+    if (s->n_msgs == 0) return NULL;
+
+    struct llama_chat_message* msgs =
+        (struct llama_chat_message*)malloc(
+            (size_t)s->n_msgs * sizeof(struct llama_chat_message));
+    if (!msgs) return NULL;
+
+    for (int i = 0; i < s->n_msgs; i++) {
+        msgs[i].role    = s->msgs[i].role;
+        msgs[i].content = s->msgs[i].content;
+    }
+
+    char* response = _chat_complete(engine, msgs, (size_t)s->n_msgs);
+    free(msgs);
+
+    if (response) {
+        _session_add(s, "assistant", response);
+    }
+    return response;
+}
+
+/* =========================================================================
  * Public API — completion
  * ====================================================================== */
 
@@ -513,4 +714,32 @@ void llama_engine_chat_session_clear(llama_engine_t handle,
         s->active = 0;
         s->id[0]  = '\0';
     }
+}
+
+/* =========================================================================
+ * Public API — array-based chat (primary interface for language bindings)
+ * ====================================================================== */
+
+char* llama_engine_chat_messages(llama_engine_t handle,
+                                  const char*    session_id,
+                                  const char*    messages_json) {
+    if (!handle) return NULL;
+    struct llama_engine* engine = (struct llama_engine*)handle;
+    char* response = _session_chat_run_messages(engine, session_id, messages_json);
+    char* json = _build_message_json(response);
+    free(response);
+    return json;
+}
+
+char* llama_engine_chat_with_object_messages(llama_engine_t handle,
+                                              const char*    session_id,
+                                              const char*    messages_json) {
+    if (!handle) return NULL;
+    struct llama_engine* engine = (struct llama_engine*)handle;
+    char* response = _session_chat_run_messages(engine, session_id, messages_json);
+    struct bridge_session* s = _session_find(engine, session_id);
+    int msg_count = s ? s->n_msgs : 0;
+    char* json = _build_object_json(response, session_id, msg_count);
+    free(response);
+    return json;
 }
