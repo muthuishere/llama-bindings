@@ -12,74 +12,46 @@ import com.sun.jna.Pointer;
  */
 interface LlamaLibrary extends Library {
 
-    /**
-     * Shared singleton instance loaded from {@code llama_bridge}.
-     */
+    /** Shared singleton instance loaded from {@code llama_bridge}. */
     LlamaLibrary INSTANCE = Native.load("llama_bridge", LlamaLibrary.class);
 
-    /* ---- v1: simple completion ---- */
-
+    /* ---- core ---- */
     Pointer llama_engine_create(String modelPath);
     Pointer llama_engine_complete(Pointer engine, String prompt);
     void    llama_engine_free_string(Pointer str);
     void    llama_engine_destroy(Pointer engine);
 
-    /* ---- v2: chat ---- */
+    /* ---- chat ---- */
 
     /**
-     * One-shot chat with optional system message and user message.
-     * systemMsg may be null or empty to omit.
-     */
-    Pointer llama_engine_chat(Pointer engine, String systemMsg, String userMsg);
-
-    /**
-     * Chat with an explicit message array.
+     * Session-based chat. Returns JSON: {@code {"role":"assistant","content":"..."}}
      *
-     * @param roles     array of role strings ("system"|"user"|"assistant")
-     * @param contents  array of message content strings
-     * @param nMessages number of messages
+     * @param sessionId        conversation identifier
+     * @param systemMessage    optional system prompt (null or "" to skip)
+     * @param userMessage      the user turn
+     * @param assistantMessage optional prior assistant turn to inject (null or "")
+     * @param toolMessage      optional tool response to inject (null or "")
      */
-    Pointer llama_engine_chat_with_messages(
-            Pointer engine, String[] roles, String[] contents, int nMessages);
-
-    /**
-     * Session-based multi-turn chat.
-     *
-     * @param sessionId session identifier
-     * @param userMsg   the user turn to append
-     */
-    Pointer llama_engine_chat_session(
-            Pointer engine, String sessionId, String userMsg);
-
-    /**
-     * Set (or replace) the system message for a session.
-     *
-     * @param sessionId session identifier
-     * @param systemMsg system message text (null or "" to clear)
-     */
-    void llama_engine_chat_session_set_system(
-            Pointer engine, String sessionId, String systemMsg);
-
-    /**
-     * Clear all history for a session.
-     *
-     * @param sessionId session identifier
-     */
-    void llama_engine_chat_session_clear(Pointer engine, String sessionId);
-
-    /**
-     * Chat with tool definitions.
-     *
-     * @param roles      array of role strings
-     * @param contents   array of message content strings
-     * @param nMessages  number of messages
-     * @param toolsJson  JSON array of tool definitions (OpenAI-compatible format)
-     */
-    Pointer llama_engine_chat_with_tools(
+    Pointer llama_engine_chat(
             Pointer engine,
-            String[] roles,
-            String[] contents,
-            int      nMessages,
-            String   toolsJson);
-}
+            String  sessionId,
+            String  systemMessage,
+            String  userMessage,
+            String  assistantMessage,
+            String  toolMessage);
 
+    /**
+     * Session-based chat with schema response.
+     * Returns JSON: {@code {"role":"assistant","content":"...","sessionId":"...","messageCount":N}}
+     */
+    Pointer llama_engine_chat_with_object(
+            Pointer engine,
+            String  sessionId,
+            String  systemMessage,
+            String  userMessage,
+            String  assistantMessage,
+            String  toolMessage);
+
+    /** Clear all history for a session. */
+    void llama_engine_chat_session_clear(Pointer engine, String sessionId);
+}

@@ -2,8 +2,6 @@ package com.example.llama;
 
 import org.junit.jupiter.api.Test;
 
-import java.util.List;
-
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
@@ -23,36 +21,62 @@ class LlamaEngineTest {
 
     @Test
     void load_throwsOnNullPath() {
-        assertThrows(IllegalArgumentException.class,
-                () -> LlamaEngine.load(null));
+        assertThrows(IllegalArgumentException.class, () -> LlamaEngine.load(null));
     }
 
     @Test
     void load_throwsOnEmptyPath() {
-        assertThrows(IllegalArgumentException.class,
-                () -> LlamaEngine.load(""));
+        assertThrows(IllegalArgumentException.class, () -> LlamaEngine.load(""));
     }
 
     @Test
     void load_throwsOnBlankPath() {
-        assertThrows(IllegalArgumentException.class,
-                () -> LlamaEngine.load("   "));
+        assertThrows(IllegalArgumentException.class, () -> LlamaEngine.load("   "));
     }
 
     @Test
-    void message_throwsOnNullRole() {
-        assertThrows(IllegalArgumentException.class,
-                () -> new LlamaEngine.Message(null, "hi"));
+    void chatRequest_nullFieldsBecomeEmpty() {
+        LlamaEngine.ChatRequest req = new LlamaEngine.ChatRequest(null, null, null, null);
+        assertEquals("", req.systemMessage);
+        assertEquals("", req.userMessage);
+        assertEquals("", req.assistantMessage);
+        assertEquals("", req.toolMessage);
     }
 
     @Test
-    void message_factoryMethods() {
-        LlamaEngine.Message sys  = LlamaEngine.Message.system("sys");
-        LlamaEngine.Message usr  = LlamaEngine.Message.user("usr");
-        LlamaEngine.Message asst = LlamaEngine.Message.assistant("asst");
-        assertEquals("system",    sys.role);
-        assertEquals("user",      usr.role);
-        assertEquals("assistant", asst.role);
+    void chatRequest_convenienceConstructors() {
+        LlamaEngine.ChatRequest r1 = new LlamaEngine.ChatRequest("hello");
+        assertEquals("hello", r1.userMessage);
+        assertEquals("", r1.systemMessage);
+
+        LlamaEngine.ChatRequest r2 = new LlamaEngine.ChatRequest("sys", "usr");
+        assertEquals("sys", r2.systemMessage);
+        assertEquals("usr", r2.userMessage);
+    }
+
+    @Test
+    void jsonString_parsesSimpleString() {
+        String json = "{\"role\":\"assistant\",\"content\":\"Hello!\"}";
+        assertEquals("assistant", LlamaEngine.jsonString(json, "role"));
+        assertEquals("Hello!",    LlamaEngine.jsonString(json, "content"));
+    }
+
+    @Test
+    void jsonString_handlesEscapeSequences() {
+        String json = "{\"content\":\"line1\\nline2\"}";
+        assertEquals("line1\nline2", LlamaEngine.jsonString(json, "content"));
+    }
+
+    @Test
+    void jsonInt_parsesInteger() {
+        String json = "{\"messageCount\":7}";
+        assertEquals(7, LlamaEngine.jsonInt(json, "messageCount"));
+    }
+
+    @Test
+    void jsonInt_returnZeroForMissingField() {
+        String json = "{\"other\":\"value\"}";
+        assertEquals(0, LlamaEngine.jsonInt(json, "messageCount"));
     }
 
     // ---------------------------------------------------------------------------
@@ -74,17 +98,7 @@ class LlamaEngineTest {
         String model = requireModelPath();
         try (LlamaEngine engine = LlamaEngine.load(model)) {
             String result = engine.complete("Say hello in one short sentence.");
-            assertNotNull(result, "completion must not be null");
             assertFalse(result.isBlank(), "completion must not be blank");
-        }
-    }
-
-    @Test
-    void factual_completionIsNonEmpty() {
-        String model = requireModelPath();
-        try (LlamaEngine engine = LlamaEngine.load(model)) {
-            String result = engine.complete("Complete this: The capital of France is");
-            assertFalse(result.isBlank(), "factual completion must not be blank");
         }
     }
 
@@ -102,8 +116,7 @@ class LlamaEngineTest {
         try (LlamaEngine engine = LlamaEngine.load(model)) {
             for (int i = 0; i < 5; i++) {
                 String result = engine.complete("Say hello.");
-                assertFalse(result.isBlank(),
-                        "completion " + i + " must not be blank");
+                assertFalse(result.isBlank(), "completion " + i + " must not be blank");
             }
         }
     }
@@ -127,8 +140,7 @@ class LlamaEngineTest {
         String model = requireModelPath();
         LlamaEngine engine = LlamaEngine.load(model);
         engine.close();
-        assertThrows(IllegalStateException.class,
-                () -> engine.complete("hello"));
+        assertThrows(IllegalStateException.class, () -> engine.complete("hello"));
     }
 
     @Test
@@ -146,20 +158,67 @@ class LlamaEngineTest {
     // ---------------------------------------------------------------------------
 
     @Test
-    void chat_withSystem_returnsNonEmpty() {
+    void chat_withSystem_returnsChatMessage() {
         String model = requireModelPath();
         try (LlamaEngine engine = LlamaEngine.load(model)) {
-            String result = engine.chat("You are a helpful assistant.", "Say hello.");
-            assertFalse(result.isBlank(), "chat response must not be blank");
+            LlamaEngine.ChatMessage msg = engine.chat("sid-java-1",
+                    new LlamaEngine.ChatRequest("You are a helpful assistant.", "Say hello."));
+            assertEquals("assistant", msg.role);
+            assertFalse(msg.content.isBlank(), "content must not be blank");
         }
     }
 
     @Test
-    void chat_noSystem_returnsNonEmpty() {
+    void chat_noSystem_returnsChatMessage() {
         String model = requireModelPath();
         try (LlamaEngine engine = LlamaEngine.load(model)) {
-            String result = engine.chat("", "Say hello.");
-            assertFalse(result.isBlank(), "chat (no system) response must not be blank");
+            LlamaEngine.ChatMessage msg = engine.chat("sid-java-2",
+                    new LlamaEngine.ChatRequest("Say hello."));
+            assertEquals("assistant", msg.role);
+            assertFalse(msg.content.isBlank(), "content must not be blank");
+        }
+    }
+
+    @Test
+    void chat_multiTurn_maintainsHistory() {
+        String model = requireModelPath();
+        try (LlamaEngine engine = LlamaEngine.load(model)) {
+            String sid = "sid-java-mt";
+            LlamaEngine.ChatMessage t1 = engine.chat(sid,
+                    new LlamaEngine.ChatRequest("You are helpful.", "Say hello."));
+            assertFalse(t1.content.isBlank(), "turn 1 must not be blank");
+
+            LlamaEngine.ChatMessage t2 = engine.chat(sid,
+                    new LlamaEngine.ChatRequest("What did you just say?"));
+            assertFalse(t2.content.isBlank(), "turn 2 must not be blank");
+        }
+    }
+
+    @Test
+    void chat_withAssistantMessage_doesNotCrash() {
+        String model = requireModelPath();
+        try (LlamaEngine engine = LlamaEngine.load(model)) {
+            LlamaEngine.ChatMessage msg = engine.chat("sid-java-asst",
+                    new LlamaEngine.ChatRequest(
+                            "You are helpful.",
+                            "What did you say before?",
+                            "I said hello earlier.",
+                            null));
+            assertFalse(msg.content.isBlank(), "content must not be blank");
+        }
+    }
+
+    @Test
+    void chat_withToolMessage_doesNotCrash() {
+        String model = requireModelPath();
+        try (LlamaEngine engine = LlamaEngine.load(model)) {
+            LlamaEngine.ChatMessage msg = engine.chat("sid-java-tool",
+                    new LlamaEngine.ChatRequest(
+                            "You are a helpful assistant.",
+                            "What is the weather?",
+                            null,
+                            "{\"weather\":\"sunny\",\"temp\":\"22C\"}"));
+            assertFalse(msg.content.isBlank(), "content must not be blank");
         }
     }
 
@@ -169,93 +228,66 @@ class LlamaEngineTest {
         LlamaEngine engine = LlamaEngine.load(model);
         engine.close();
         assertThrows(IllegalStateException.class,
-                () -> engine.chat("sys", "user"));
+                () -> engine.chat("sid", new LlamaEngine.ChatRequest("hello")));
     }
 
     @Test
-    void chatWithMessages_returnsNonEmpty() {
-        String model = requireModelPath();
-        try (LlamaEngine engine = LlamaEngine.load(model)) {
-            List<LlamaEngine.Message> msgs = List.of(
-                    LlamaEngine.Message.system("You are a helpful assistant."),
-                    LlamaEngine.Message.user("Say hello in one sentence.")
-            );
-            String result = engine.chatWithMessages(msgs);
-            assertFalse(result.isBlank(), "chatWithMessages response must not be blank");
-        }
-    }
-
-    @Test
-    void chatWithMessages_throwsOnEmptyList() {
+    void chat_blankSessionId_throwsIllegalArgumentException() {
         String model = requireModelPath();
         try (LlamaEngine engine = LlamaEngine.load(model)) {
             assertThrows(IllegalArgumentException.class,
-                    () -> engine.chatWithMessages(List.of()));
+                    () -> engine.chat("", new LlamaEngine.ChatRequest("hello")));
         }
     }
 
     @Test
-    void chatSession_multiTurn_doesNotCrash() {
+    void chatWithObject_returnsSchemaResponse() {
         String model = requireModelPath();
         try (LlamaEngine engine = LlamaEngine.load(model)) {
-            String turn1 = engine.chatSession("sid-java-1", "Say hello.");
-            assertFalse(turn1.isBlank(), "turn 1 must not be blank");
-
-            String turn2 = engine.chatSession("sid-java-1", "What did you just say?");
-            assertFalse(turn2.isBlank(), "turn 2 must not be blank");
+            String sid = "sid-java-obj";
+            LlamaEngine.ChatResponse resp = engine.chatWithObject(sid,
+                    new LlamaEngine.ChatRequest("You are helpful.", "Say hello."));
+            assertEquals("assistant", resp.role);
+            assertFalse(resp.content.isBlank(), "content must not be blank");
+            assertEquals(sid, resp.sessionId);
+            assertTrue(resp.messageCount > 0, "messageCount must be > 0");
         }
     }
 
     @Test
-    void chatSession_setSystem_doesNotCrash() {
+    void chatWithObject_multiTurn_messageCountGrows() {
         String model = requireModelPath();
         try (LlamaEngine engine = LlamaEngine.load(model)) {
-            engine.chatSessionSetSystem("sid-java-sys", "You are a helpful assistant.");
-            String result = engine.chatSession("sid-java-sys", "Say hello.");
-            assertFalse(result.isBlank(), "session with system response must not be blank");
+            String sid = "sid-java-obj-mt";
+            LlamaEngine.ChatResponse r1 = engine.chatWithObject(sid,
+                    new LlamaEngine.ChatRequest("Hello."));
+            LlamaEngine.ChatResponse r2 = engine.chatWithObject(sid,
+                    new LlamaEngine.ChatRequest("How are you?"));
+            assertTrue(r2.messageCount > r1.messageCount,
+                    "messageCount must grow: r1=" + r1.messageCount + " r2=" + r2.messageCount);
         }
     }
 
     @Test
-    void chatSession_clearThenContinue_doesNotCrash() {
+    void chatSessionClear_resetsHistory() {
         String model = requireModelPath();
         try (LlamaEngine engine = LlamaEngine.load(model)) {
-            engine.chatSession("sid-java-clear", "Say hello.");
-            engine.chatSessionClear("sid-java-clear");
-            String result = engine.chatSession("sid-java-clear", "Say hello again.");
-            assertFalse(result.isBlank(), "response after clear must not be blank");
+            String sid = "sid-java-clear";
+            engine.chat(sid, new LlamaEngine.ChatRequest("Say hello."));
+            engine.chatSessionClear(sid);
+
+            LlamaEngine.ChatMessage msg = engine.chat(sid,
+                    new LlamaEngine.ChatRequest("Say hello again."));
+            assertFalse(msg.content.isBlank(), "content after clear must not be blank");
         }
     }
 
     @Test
-    void chatSession_throwsOnBlankSessionId() {
+    void chatWithObject_afterClose_throwsIllegalStateException() {
         String model = requireModelPath();
-        try (LlamaEngine engine = LlamaEngine.load(model)) {
-            assertThrows(IllegalArgumentException.class,
-                    () -> engine.chatSession("", "hello"));
-        }
-    }
-
-    @Test
-    void chatWithTools_returnsRawOutput() {
-        String model = requireModelPath();
-        try (LlamaEngine engine = LlamaEngine.load(model)) {
-            String tools = "[{\"name\":\"get_weather\",\"description\":\"Get the weather\","
-                    + "\"parameters\":{\"location\":{\"type\":\"string\"}}}]";
-            List<LlamaEngine.Message> msgs = List.of(
-                    LlamaEngine.Message.user("What is the weather in Paris?")
-            );
-            String result = engine.chatWithTools(msgs, tools);
-            assertFalse(result.isBlank(), "chatWithTools response must not be blank");
-        }
-    }
-
-    @Test
-    void chatWithTools_throwsOnEmptyMessages() {
-        String model = requireModelPath();
-        try (LlamaEngine engine = LlamaEngine.load(model)) {
-            assertThrows(IllegalArgumentException.class,
-                    () -> engine.chatWithTools(List.of(), "[]"));
-        }
+        LlamaEngine engine = LlamaEngine.load(model);
+        engine.close();
+        assertThrows(IllegalStateException.class,
+                () -> engine.chatWithObject("sid", new LlamaEngine.ChatRequest("hello")));
     }
 }

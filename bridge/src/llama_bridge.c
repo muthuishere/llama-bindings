@@ -220,6 +220,33 @@ static void _session_add(struct bridge_session* s,
     s->n_msgs++;
 }
 
+/*
+ * Set or replace the system message at the head of the session.
+ * If a system message already exists at index 0, its content is replaced.
+ * Otherwise a new system message is prepended (existing messages shift up).
+ */
+static void _session_set_system(struct bridge_session* s,
+                                 const char*            system_msg) {
+    if (!system_msg || system_msg[0] == '\0') return;
+
+    /* Replace existing system message if present at index 0. */
+    if (s->n_msgs > 0 && s->msgs[0].role &&
+        strcmp(s->msgs[0].role, "system") == 0) {
+        free(s->msgs[0].content);
+        s->msgs[0].content = _strdup_safe(system_msg);
+        return;
+    }
+
+    /* Prepend a new system message. */
+    if (s->n_msgs >= BRIDGE_MAX_SESSION_MSGS) return;
+    for (int i = s->n_msgs; i > 0; i--) {
+        s->msgs[i] = s->msgs[i - 1];
+    }
+    s->msgs[0].role    = _strdup_safe("system");
+    s->msgs[0].content = _strdup_safe(system_msg);
+    s->n_msgs++;
+}
+
 static void _session_free_msgs(struct bridge_session* s) {
     for (int i = 0; i < s->n_msgs; i++) {
         free(s->msgs[i].role);
@@ -228,6 +255,134 @@ static void _session_free_msgs(struct bridge_session* s) {
         s->msgs[i].content = NULL;
     }
     s->n_msgs = 0;
+}
+
+/*
+ * JSON string encoder — returns a heap-allocated, double-quoted,
+ * escape-safe JSON string representation of `s`.
+ * Returns NULL on allocation failure.
+ */
+static char* _json_encode_string(const char* s) {
+    if (!s) return _strdup_safe("\"\"");
+    size_t out_cap = strlen(s) * 2 + 4;
+    char*  out     = (char*)malloc(out_cap);
+    if (!out) return NULL;
+    size_t i = 0, j = 0;
+    out[j++] = '"';
+    while (s[i]) {
+        if (j + 6 >= out_cap) {
+            out_cap *= 2;
+            char* tmp = (char*)realloc(out, out_cap);
+            if (!tmp) { free(out); return NULL; }
+            out = tmp;
+        }
+        switch (s[i]) {
+            case '"':  out[j++] = '\\'; out[j++] = '"';  break;
+            case '\\': out[j++] = '\\'; out[j++] = '\\'; break;
+            case '\n': out[j++] = '\\'; out[j++] = 'n';  break;
+            case '\r': out[j++] = '\\'; out[j++] = 'r';  break;
+            case '\t': out[j++] = '\\'; out[j++] = 't';  break;
+            default:   out[j++] = s[i]; break;
+        }
+        i++;
+    }
+    out[j++] = '"';
+    out[j]   = '\0';
+    return out;
+}
+
+/* Build {"role":"assistant","content":"<escaped>"} */
+static char* _build_message_json(const char* content) {
+    char* ec = _json_encode_string(content ? content : "");
+    if (!ec) return NULL;
+    /* "assistant" is always the role returned by inference */
+    size_t len = strlen("{\"role\":\"assistant\",\"content\":}") + strlen(ec) + 1;
+    char*  out = (char*)malloc(len);
+    if (!out) { free(ec); return NULL; }
+    snprintf(out, len, "{\"role\":\"assistant\",\"content\":%s}", ec);
+    free(ec);
+    return out;
+}
+
+/* Build {"role":"assistant","content":"<escaped>","sessionId":"<sid>","messageCount":<n>} */
+static char* _build_object_json(const char* content,
+                                 const char* session_id,
+                                 int         msg_count) {
+    char* ec  = _json_encode_string(content    ? content    : "");
+    char* esc = _json_encode_string(session_id ? session_id : "");
+    if (!ec || !esc) { free(ec); free(esc); return NULL; }
+    size_t len = strlen("{\"role\":\"assistant\",\"content\":,\"sessionId\":,\"messageCount\":}")
+                 + strlen(ec) + strlen(esc) + 32;
+    char* out = (char*)malloc(len);
+    if (!out) { free(ec); free(esc); return NULL; }
+    snprintf(out, len,
+             "{\"role\":\"assistant\",\"content\":%s,\"sessionId\":%s,\"messageCount\":%d}",
+             ec, esc, msg_count);
+    free(ec);
+    free(esc);
+    return out;
+}
+
+/*
+ * Core session-chat helper: adds the incoming messages to the session,
+ * runs inference, stores the assistant response, and returns the raw
+ * assistant text (heap-allocated, caller must free).
+ *
+ * Message injection order: system → assistant → tool → user.
+ */
+static char* _session_chat_run(struct llama_engine* engine,
+                                const char*          session_id,
+                                const char*          system_message,
+                                const char*          user_message,
+                                const char*          assistant_message,
+                                const char*          tool_message) {
+    if (!session_id || session_id[0] == '\0') return NULL;
+
+    struct bridge_session* s = _session_get_or_create(engine, session_id);
+    if (!s) return NULL;
+
+    /* 1. Set/update system message */
+    if (system_message && system_message[0] != '\0') {
+        _session_set_system(s, system_message);
+    }
+
+    /* 2. Inject prior assistant turn (few-shot / correction) */
+    if (assistant_message && assistant_message[0] != '\0') {
+        _session_add(s, "assistant", assistant_message);
+    }
+
+    /* 3. Inject tool response */
+    if (tool_message && tool_message[0] != '\0') {
+        _session_add(s, "tool", tool_message);
+    }
+
+    /* 4. Add user message */
+    if (user_message && user_message[0] != '\0') {
+        _session_add(s, "user", user_message);
+    }
+
+    if (s->n_msgs == 0) return NULL;
+
+    /* 5. Build message array and run inference */
+    struct llama_chat_message* msgs =
+        (struct llama_chat_message*)malloc(
+            (size_t)s->n_msgs * sizeof(struct llama_chat_message));
+    if (!msgs) return NULL;
+
+    for (int i = 0; i < s->n_msgs; i++) {
+        msgs[i].role    = s->msgs[i].role;
+        msgs[i].content = s->msgs[i].content;
+    }
+
+    char* response = _chat_complete(engine, msgs, (size_t)s->n_msgs);
+    free(msgs);
+
+    /* 6. Store assistant response in session */
+    if (response) {
+        _session_add(s, "assistant", response);
+    }
+
+    return response; /* caller frees */
 }
 
 /* =========================================================================
@@ -240,10 +395,8 @@ llama_engine_t llama_engine_create(const char* model_path) {
         return NULL;
     }
 
-    /* Initialise the backend (idempotent after first call). */
     llama_backend_init();
 
-    /* Load model. */
     struct llama_model_params mparams = llama_model_default_params();
     struct llama_model* model = llama_model_load_from_file(model_path, mparams);
     if (!model) {
@@ -251,7 +404,6 @@ llama_engine_t llama_engine_create(const char* model_path) {
         return NULL;
     }
 
-    /* Create context. */
     struct llama_context_params cparams = llama_context_default_params();
     cparams.n_ctx = BRIDGE_N_CTX_DEFAULT;
 
@@ -262,7 +414,7 @@ llama_engine_t llama_engine_create(const char* model_path) {
         return NULL;
     }
 
-    /* Use calloc so that sessions[] is zero-initialised. */
+    /* calloc ensures sessions[] is zero-initialised */
     struct llama_engine* engine =
         (struct llama_engine*)calloc(1, sizeof(struct llama_engine));
     if (!engine) {
@@ -292,7 +444,6 @@ void llama_engine_destroy(llama_engine_t handle) {
     if (!handle) return;
     struct llama_engine* engine = (struct llama_engine*)handle;
 
-    /* Free all active session messages. */
     for (int i = 0; i < BRIDGE_MAX_SESSIONS; i++) {
         if (engine->sessions[i].active) {
             _session_free_msgs(&engine->sessions[i]);
@@ -309,112 +460,47 @@ void llama_engine_destroy(llama_engine_t handle) {
  * ====================================================================== */
 
 char* llama_engine_chat(llama_engine_t handle,
-                        const char*    system_msg,
-                        const char*    user_msg) {
+                        const char*    session_id,
+                        const char*    system_message,
+                        const char*    user_message,
+                        const char*    assistant_message,
+                        const char*    tool_message) {
     if (!handle) return NULL;
-    if (!user_msg) user_msg = "";
 
-    struct llama_chat_message msgs[2];
-    size_t n = 0;
+    struct llama_engine* engine = (struct llama_engine*)handle;
 
-    if (system_msg && system_msg[0] != '\0') {
-        msgs[n].role    = "system";
-        msgs[n].content = system_msg;
-        n++;
-    }
-    msgs[n].role    = "user";
-    msgs[n].content = user_msg;
-    n++;
+    char* response = _session_chat_run(engine, session_id,
+                                       system_message, user_message,
+                                       assistant_message, tool_message);
 
-    return _chat_complete((struct llama_engine*)handle, msgs, n);
+    char* json = _build_message_json(response);
+    free(response);
+    return json;
 }
 
-char* llama_engine_chat_with_messages(llama_engine_t handle,
-                                       const char**   roles,
-                                       const char**   contents,
-                                       int            n_messages) {
-    if (!handle || n_messages <= 0 || !roles || !contents) return NULL;
-
-    struct llama_chat_message* msgs =
-        (struct llama_chat_message*)malloc(
-            (size_t)n_messages * sizeof(struct llama_chat_message));
-    if (!msgs) return NULL;
-
-    for (int i = 0; i < n_messages; i++) {
-        msgs[i].role    = roles[i]    ? roles[i]    : "user";
-        msgs[i].content = contents[i] ? contents[i] : "";
-    }
-
-    char* result = _chat_complete(
-        (struct llama_engine*)handle, msgs, (size_t)n_messages);
-    free(msgs);
-    return result;
-}
-
-char* llama_engine_chat_session(llama_engine_t handle,
-                                 const char*    session_id,
-                                 const char*    user_msg) {
-    if (!handle || !session_id || session_id[0] == '\0') return NULL;
-    if (!user_msg) user_msg = "";
+char* llama_engine_chat_with_object(llama_engine_t handle,
+                                     const char*    session_id,
+                                     const char*    system_message,
+                                     const char*    user_message,
+                                     const char*    assistant_message,
+                                     const char*    tool_message) {
+    if (!handle) return NULL;
 
     struct llama_engine*   engine = (struct llama_engine*)handle;
-    struct bridge_session* s      = _session_get_or_create(engine, session_id);
-    if (!s) return NULL;
+    struct bridge_session* s      = _session_find(engine, session_id);
+    /* We need message count AFTER the call, so run chat first. */
 
-    /* Append user turn. */
-    _session_add(s, "user", user_msg);
+    char* response = _session_chat_run(engine, session_id,
+                                       system_message, user_message,
+                                       assistant_message, tool_message);
 
-    /* Build llama_chat_message array from session history. */
-    struct llama_chat_message* msgs =
-        (struct llama_chat_message*)malloc(
-            (size_t)s->n_msgs * sizeof(struct llama_chat_message));
-    if (!msgs) return NULL;
+    /* Look up session again (created by _session_chat_run if it didn't exist) */
+    s = _session_find(engine, session_id);
+    int msg_count = s ? s->n_msgs : 0;
 
-    for (int i = 0; i < s->n_msgs; i++) {
-        msgs[i].role    = s->msgs[i].role;
-        msgs[i].content = s->msgs[i].content;
-    }
-
-    char* response = _chat_complete(engine, msgs, (size_t)s->n_msgs);
-    free(msgs);
-
-    /* Append assistant turn to history so the next call has context. */
-    if (response) {
-        _session_add(s, "assistant", response);
-    }
-
-    return response;
-}
-
-void llama_engine_chat_session_set_system(llama_engine_t handle,
-                                           const char*    session_id,
-                                           const char*    system_msg) {
-    if (!handle || !session_id || session_id[0] == '\0') return;
-
-    struct llama_engine*   engine = (struct llama_engine*)handle;
-    struct bridge_session* s      = _session_get_or_create(engine, session_id);
-    if (!s) return;
-
-    /* Replace existing system message at index 0 if present. */
-    if (s->n_msgs > 0 && s->msgs[0].role &&
-        strcmp(s->msgs[0].role, "system") == 0) {
-        free(s->msgs[0].content);
-        s->msgs[0].content = _strdup_safe(
-            (system_msg && system_msg[0]) ? system_msg : "");
-        return;
-    }
-
-    /* Prepend new system message — nothing to prepend if empty. */
-    if (!system_msg || system_msg[0] == '\0') return;
-    if (s->n_msgs >= BRIDGE_MAX_SESSION_MSGS) return;
-
-    /* Shift all existing messages up by one slot. */
-    for (int i = s->n_msgs; i > 0; i--) {
-        s->msgs[i] = s->msgs[i - 1];
-    }
-    s->msgs[0].role    = _strdup_safe("system");
-    s->msgs[0].content = _strdup_safe(system_msg);
-    s->n_msgs++;
+    char* json = _build_object_json(response, session_id, msg_count);
+    free(response);
+    return json;
 }
 
 void llama_engine_chat_session_clear(llama_engine_t handle,
@@ -428,76 +514,3 @@ void llama_engine_chat_session_clear(llama_engine_t handle,
         s->id[0]  = '\0';
     }
 }
-
-char* llama_engine_chat_with_tools(llama_engine_t handle,
-                                    const char**   roles,
-                                    const char**   contents,
-                                    int            n_messages,
-                                    const char*    tools_json) {
-    if (!handle || n_messages <= 0 || !roles || !contents) return NULL;
-    if (!tools_json) tools_json = "[]";
-
-    /*
-     * Build a tools block and inject it into the system message.
-     * Any model can reason about tools this way; models with native
-     * tool-call templates will handle the JSON block correctly.
-     */
-    size_t block_len = strlen(BRIDGE_TOOL_HEADER) + strlen(tools_json) +
-                       strlen(BRIDGE_TOOL_FOOTER) + 1;
-    char* tools_block = (char*)malloc(block_len);
-    if (!tools_block) return NULL;
-    snprintf(tools_block, block_len, "%s%s%s",
-             BRIDGE_TOOL_HEADER, tools_json, BRIDGE_TOOL_FOOTER);
-
-    /* Determine whether the caller already has a system message. */
-    int has_system = (n_messages > 0 && roles[0] &&
-                      strcmp(roles[0], "system") == 0);
-
-    int          total        = has_system ? n_messages : n_messages + 1;
-    const char** new_roles    = (const char**)malloc((size_t)total * sizeof(char*));
-    const char** new_contents = (const char**)malloc((size_t)total * sizeof(char*));
-    char*        merged_sys   = NULL;
-
-    if (!new_roles || !new_contents) {
-        free(tools_block);
-        free(new_roles);
-        free(new_contents);
-        return NULL;
-    }
-
-    if (has_system) {
-        const char* orig = contents[0] ? contents[0] : "";
-        size_t mlen = strlen(tools_block) + strlen(orig) + 2;
-        merged_sys = (char*)malloc(mlen);
-        if (!merged_sys) {
-            free(tools_block);
-            free(new_roles);
-            free(new_contents);
-            return NULL;
-        }
-        snprintf(merged_sys, mlen, "%s\n%s", tools_block, orig);
-        new_roles[0]    = "system";
-        new_contents[0] = merged_sys;
-        for (int i = 1; i < n_messages; i++) {
-            new_roles[i]    = roles[i];
-            new_contents[i] = contents[i];
-        }
-    } else {
-        new_roles[0]    = "system";
-        new_contents[0] = tools_block;
-        for (int i = 0; i < n_messages; i++) {
-            new_roles[i + 1]    = roles[i];
-            new_contents[i + 1] = contents[i];
-        }
-    }
-
-    char* result = llama_engine_chat_with_messages(
-        handle, new_roles, new_contents, total);
-
-    free(tools_block);
-    free(merged_sys);
-    free(new_roles);
-    free(new_contents);
-    return result;
-}
-

@@ -21,14 +21,15 @@ typedef void* llama_engine_t;
 llama_engine_t llama_engine_create(const char* model_path);
 
 /**
- * Run a completion for the given prompt using the engine.
+ * Run a raw completion for the given prompt (no chat template applied).
  * Returns a heap-allocated C string that the caller must free with
  * llama_engine_free_string(). Returns NULL on failure.
  */
 char* llama_engine_complete(llama_engine_t engine, const char* prompt);
 
 /**
- * Free a string returned by llama_engine_complete().
+ * Free a string returned by llama_engine_complete(), llama_engine_chat(),
+ * or llama_engine_chat_with_object().
  */
 void llama_engine_free_string(char* str);
 
@@ -38,93 +39,60 @@ void llama_engine_free_string(char* str);
 void llama_engine_destroy(llama_engine_t engine);
 
 /* =========================================================================
- * Chat API
+ * Chat API — two unified session-based methods
  * ====================================================================== */
 
 /**
- * One-shot chat with an optional system message and a user message.
+ * Session-based chat.
  *
- * The model's built-in chat template is applied automatically.
- * system_msg may be NULL or "" to omit.
- * Returns a heap-allocated completion string (free with llama_engine_free_string).
+ * session_id        — conversation identifier; created automatically on first call.
+ * system_message    — optional; sets or replaces the session system prompt.
+ *                     Pass NULL or "" to leave the existing system prompt unchanged.
+ * user_message      — the user turn (main input for this call).
+ * assistant_message — optional; inject a prior assistant turn into the session
+ *                     before the user message (for few-shot context / correction).
+ * tool_message      — optional; inject a tool-use response (role "tool") before
+ *                     the user message.
+ *
+ * The model's built-in chat template is applied to the full session history.
+ * The assistant response is appended to the session history automatically.
+ *
+ * Returns a heap-allocated JSON string:
+ *   {"role":"assistant","content":"<text>"}
+ * Free with llama_engine_free_string(). Returns NULL on failure.
  */
 char* llama_engine_chat(
     llama_engine_t engine,
-    const char*    system_msg,
-    const char*    user_msg
+    const char*    session_id,
+    const char*    system_message,
+    const char*    user_message,
+    const char*    assistant_message,
+    const char*    tool_message
 );
 
 /**
- * Chat with an explicit message array (chatWithObject equivalent).
+ * Same as llama_engine_chat but returns a richer JSON schema response
+ * that includes session metadata:
+ *   {"role":"assistant","content":"<text>","sessionId":"<id>","messageCount":<n>}
  *
- * roles[i]:    "system" | "user" | "assistant"
- * contents[i]: message text
- * n_messages:  array length
- *
- * Returns a heap-allocated completion string (free with llama_engine_free_string).
+ * Free with llama_engine_free_string(). Returns NULL on failure.
  */
-char* llama_engine_chat_with_messages(
-    llama_engine_t  engine,
-    const char**    roles,
-    const char**    contents,
-    int             n_messages
-);
-
-/**
- * Session-based multi-turn chat.
- *
- * Conversation history is maintained inside the engine, keyed by session_id.
- * Appends user_msg to the session and returns the next assistant turn.
- * The assistant response is automatically appended to the session history.
- *
- * Returns a heap-allocated string (free with llama_engine_free_string).
- */
-char* llama_engine_chat_session(
+char* llama_engine_chat_with_object(
     llama_engine_t engine,
     const char*    session_id,
-    const char*    user_msg
+    const char*    system_message,
+    const char*    user_message,
+    const char*    assistant_message,
+    const char*    tool_message
 );
 
 /**
- * Set (or replace) the system message for a named session.
- * Call this before the first llama_engine_chat_session call if a system
- * prompt is required.  Pass NULL or "" to clear the system message.
- */
-void llama_engine_chat_session_set_system(
-    llama_engine_t engine,
-    const char*    session_id,
-    const char*    system_msg
-);
-
-/**
- * Clear all history for a session (including the system message).
+ * Clear all history for the named session (including the system message).
  * The session slot is released and can be reused.
  */
 void llama_engine_chat_session_clear(
     llama_engine_t engine,
     const char*    session_id
-);
-
-/**
- * Chat with tool definitions.
- *
- * roles / contents / n_messages: message array (same as chat_with_messages).
- * tools_json: JSON string describing available tools (OpenAI-compatible format,
- *   e.g. [{"name":"...", "description":"...", "parameters":{...}}]).
- *
- * The tools block is injected into the system message so that any model can
- * reason about tools.  Raw model output is returned — the model's response
- * may include a tool-call JSON object; the caller is responsible for
- * interpreting and executing it.
- *
- * Returns a heap-allocated string (free with llama_engine_free_string).
- */
-char* llama_engine_chat_with_tools(
-    llama_engine_t engine,
-    const char**   roles,
-    const char**   contents,
-    int            n_messages,
-    const char*    tools_json
 );
 
 #ifdef __cplusplus

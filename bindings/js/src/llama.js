@@ -9,25 +9,30 @@
  *
  *   const engine = Llama.load('model.gguf');
  *
- *   // Simple completion (no chat template)
+ *   // Raw completion (no chat template)
  *   const out = engine.complete('Say hello.');
  *
- *   // One-shot chat
- *   const reply = engine.chat('You are helpful.', 'What is 2+2?');
+ *   // Session-based chat — returns {role, content}
+ *   const msg = engine.chat('sid-1', {
+ *     systemMessage: 'You are helpful.',
+ *     userMessage:   'What is 2+2?',
+ *   });
+ *   console.log(msg.content);
  *
- *   // Chat with message objects (chatWithObject)
- *   const reply2 = engine.chatWithMessages([
- *     { role: 'system', content: 'You are helpful.' },
- *     { role: 'user',   content: 'What is 2+2?' },
- *   ]);
+ *   // Structured response with session metadata
+ *   const resp = engine.chatWithObject('sid-1', {
+ *     userMessage: 'Tell me more.',
+ *   });
+ *   console.log(resp.role, resp.content, resp.sessionId, resp.messageCount);
  *
- *   // Session-based multi-turn chat
- *   const t1 = engine.chatSession('sid-1', 'Hello!');
- *   const t2 = engine.chatSession('sid-1', 'What did I just say?');
+ *   // Inject a tool response into the conversation
+ *   engine.chat('sid-1', {
+ *     toolMessage: '{"result": 42}',
+ *     userMessage: 'What was the result?',
+ *   });
  *
- *   // Chat with tool definitions (raw output)
- *   const tools = '[{"name":"add","description":"Add numbers","parameters":{}}]';
- *   const raw = engine.chatWithTools([{ role: 'user', content: 'Add 3 and 4' }], tools);
+ *   // Clear session history
+ *   engine.chatSessionClear('sid-1');
  *
  *   engine.close();
  *
@@ -63,38 +68,18 @@ let _lib;
 function getLib() {
     if (!_lib) {
         _lib = ffi.Library(libName, {
-            /* v1: simple completion */
-            llama_engine_create:                  [voidPtr, ['string']],
-            llama_engine_complete:                [voidPtr, [voidPtr, 'string']],
-            llama_engine_free_string:             ['void',  [voidPtr]],
-            llama_engine_destroy:                 ['void',  [voidPtr]],
-            /* v2: chat */
-            llama_engine_chat:                    [voidPtr, [voidPtr, 'string', 'string']],
-            llama_engine_chat_with_messages:      [voidPtr, [voidPtr, 'pointer', 'pointer', 'int']],
-            llama_engine_chat_session:            [voidPtr, [voidPtr, 'string', 'string']],
-            llama_engine_chat_session_set_system: ['void',  [voidPtr, 'string', 'string']],
-            llama_engine_chat_session_clear:      ['void',  [voidPtr, 'string']],
-            llama_engine_chat_with_tools:         [voidPtr, [voidPtr, 'pointer', 'pointer', 'int', 'string']],
+            /* core */
+            llama_engine_create:              [voidPtr, ['string']],
+            llama_engine_complete:            [voidPtr, [voidPtr, 'string']],
+            llama_engine_free_string:         ['void',  [voidPtr]],
+            llama_engine_destroy:             ['void',  [voidPtr]],
+            /* chat */
+            llama_engine_chat:                [voidPtr, [voidPtr, 'string', 'string', 'string', 'string', 'string']],
+            llama_engine_chat_with_object:    [voidPtr, [voidPtr, 'string', 'string', 'string', 'string', 'string']],
+            llama_engine_chat_session_clear:  ['void',  [voidPtr, 'string']],
         });
     }
     return _lib;
-}
-
-// ---------------------------------------------------------------------------
-// Helper: build a native char** from a JS string array
-//
-// Returns { ptrBuf, cBufs } where:
-//   ptrBuf  — a Buffer holding n native pointers (pass to C as char**)
-//   cBufs   — array of Buffers holding the null-terminated C strings
-//             (kept alive to prevent GC during the native call)
-// ---------------------------------------------------------------------------
-
-function _makeStringArray(strings) {
-    const ptrSize = ref.sizeof.pointer;
-    const cBufs   = strings.map(s => Buffer.from((s || '') + '\0', 'utf8'));
-    const ptrBuf  = Buffer.alloc(ptrSize * strings.length);
-    cBufs.forEach((cb, i) => ref.writePointer(ptrBuf, i * ptrSize, cb));
-    return { ptrBuf, cBufs };
 }
 
 // ---------------------------------------------------------------------------
@@ -133,7 +118,7 @@ class Engine {
     }
 
     // -----------------------------------------------------------------------
-    // v1: simple completion (no chat template)
+    // Raw completion (no chat template)
     // -----------------------------------------------------------------------
 
     /**
@@ -151,95 +136,66 @@ class Engine {
     }
 
     // -----------------------------------------------------------------------
-    // v2: chat
+    // Chat API
     // -----------------------------------------------------------------------
 
     /**
-     * One-shot chat with an optional system message and a user message.
-     * The model's built-in chat template is applied automatically.
+     * Session-based chat turn. Returns {role, content}.
      *
-     * @param {string} systemMsg  system prompt (null or '' to omit)
-     * @param {string} userMsg    user message
-     * @returns {string} assistant response
+     * The engine maintains conversation history keyed by sessionId.
+     * Non-empty fields in the request are appended to the session in this
+     * order: systemMessage → assistantMessage → toolMessage → userMessage.
+     *
+     * @param {string} sessionId  conversation identifier (auto-created on first call)
+     * @param {object} request    message fields
+     * @param {string} [request.systemMessage='']    optional system prompt
+     * @param {string} [request.userMessage='']      the user turn
+     * @param {string} [request.assistantMessage=''] optional prior assistant turn
+     * @param {string} [request.toolMessage='']      optional tool response
+     * @returns {{role: string, content: string}}
      */
-    chat(systemMsg, userMsg) {
+    chat(sessionId, request) {
         this._ensureOpen();
+        if (!sessionId) throw new Error('llama: sessionId must not be empty');
+        const req = request || {};
         const resultPtr = this._lib.llama_engine_chat(
             this._handle,
-            systemMsg || '',
-            userMsg   || ''
+            sessionId,
+            req.systemMessage    || '',
+            req.userMessage      || '',
+            req.assistantMessage || '',
+            req.toolMessage      || ''
         );
         if (ref.isNull(resultPtr)) throw new Error('llama: chat returned null');
-        return _readAndFree(this._lib, resultPtr);
+        const json = _readAndFree(this._lib, resultPtr);
+        return JSON.parse(json);
     }
 
     /**
-     * Chat with an explicit array of message objects (chatWithObject equivalent).
+     * Session-based chat turn that returns a richer schema response.
      *
-     * Each message must have { role: string, content: string }.
-     * Role must be 'system', 'user', or 'assistant'.
+     * Same as {@link chat} but the returned object also contains
+     * {@code sessionId} and {@code messageCount}.
      *
-     * @param {Array<{role:string,content:string}>} messages
-     * @returns {string} assistant response
+     * @param {string} sessionId  conversation identifier
+     * @param {object} request    same fields as {@link chat}
+     * @returns {{role: string, content: string, sessionId: string, messageCount: number}}
      */
-    chatWithMessages(messages) {
-        this._ensureOpen();
-        if (!Array.isArray(messages) || messages.length === 0) {
-            throw new Error('llama: messages must be a non-empty array');
-        }
-        const roles    = messages.map(m => m.role    || 'user');
-        const contents = messages.map(m => m.content || '');
-        const { ptrBuf: rolesBuf,    cBufs: rolesC    } = _makeStringArray(roles);
-        const { ptrBuf: contentsBuf, cBufs: contentsC } = _makeStringArray(contents);
-
-        // rolesC and contentsC must remain referenced until the native call
-        // returns to prevent the GC from collecting the underlying Buffers.
-        // The explicit reference below satisfies the linter while keeping
-        // them alive across the synchronous native call.
-        const _keepAlive1 = rolesC.length + contentsC.length;
-
-        const resultPtr = this._lib.llama_engine_chat_with_messages(
-            this._handle, rolesBuf, contentsBuf, messages.length);
-        if (ref.isNull(resultPtr)) throw new Error('llama: chatWithMessages returned null');
-        return _readAndFree(this._lib, resultPtr);
-    }
-
-    /**
-     * Session-based multi-turn chat.
-     *
-     * Conversation history is maintained inside the native engine, keyed by
-     * sessionId.  Each call appends userMsg to the session and returns the
-     * next assistant turn.
-     *
-     * Call {@link chatSessionSetSystem} before the first turn to set a system
-     * prompt.
-     *
-     * @param {string} sessionId  unique session identifier
-     * @param {string} userMsg    the user's message
-     * @returns {string} assistant response
-     */
-    chatSession(sessionId, userMsg) {
+    chatWithObject(sessionId, request) {
         this._ensureOpen();
         if (!sessionId) throw new Error('llama: sessionId must not be empty');
-        const resultPtr = this._lib.llama_engine_chat_session(
-            this._handle, sessionId, userMsg || '');
-        if (ref.isNull(resultPtr)) throw new Error('llama: chatSession returned null');
-        return _readAndFree(this._lib, resultPtr);
-    }
-
-    /**
-     * Set (or replace) the system message for a named session.
-     * Call before the first {@link chatSession} turn if a system prompt is
-     * required.
-     *
-     * @param {string} sessionId  session identifier
-     * @param {string} systemMsg  system prompt (null or '' to clear)
-     */
-    chatSessionSetSystem(sessionId, systemMsg) {
-        this._ensureOpen();
-        if (!sessionId) throw new Error('llama: sessionId must not be empty');
-        this._lib.llama_engine_chat_session_set_system(
-            this._handle, sessionId, systemMsg || '');
+        const req = request || {};
+        const resultPtr = this._lib.llama_engine_chat_with_object(
+            this._handle,
+            sessionId,
+            req.systemMessage    || '',
+            req.userMessage      || '',
+            req.assistantMessage || '',
+            req.toolMessage      || ''
+        );
+        if (ref.isNull(resultPtr)) throw new Error('llama: chatWithObject returned null');
+        const json = _readAndFree(this._lib, resultPtr);
+        return JSON.parse(json);
     }
 
     /**
@@ -253,41 +209,6 @@ class Engine {
         if (sessionId) {
             this._lib.llama_engine_chat_session_clear(this._handle, sessionId);
         }
-    }
-
-    /**
-     * Chat with tool definitions.
-     *
-     * The tool definitions are injected into the system message so that any
-     * model can reason about available tools.  The <em>raw</em> model output
-     * is returned — the caller is responsible for parsing and executing any
-     * tool calls the model emits.
-     *
-     * @param {Array<{role:string,content:string}>} messages  non-empty message array
-     * @param {string} toolsJson  JSON array of tool definitions
-     *   (OpenAI-compatible format, e.g.
-     *   '[{"name":"…","description":"…","parameters":{…}}]')
-     * @returns {string} raw assistant response (may contain a tool-call JSON object)
-     */
-    chatWithTools(messages, toolsJson) {
-        this._ensureOpen();
-        if (!Array.isArray(messages) || messages.length === 0) {
-            throw new Error('llama: messages must be a non-empty array');
-        }
-        const roles    = messages.map(m => m.role    || 'user');
-        const contents = messages.map(m => m.content || '');
-        const { ptrBuf: rolesBuf,    cBufs: rolesC    } = _makeStringArray(roles);
-        const { ptrBuf: contentsBuf, cBufs: contentsC } = _makeStringArray(contents);
-
-        // rolesC and contentsC must remain referenced until the native call
-        // returns to prevent the GC from collecting the underlying Buffers.
-        const _keepAlive2 = rolesC.length + contentsC.length;
-
-        const resultPtr = this._lib.llama_engine_chat_with_tools(
-            this._handle, rolesBuf, contentsBuf, messages.length,
-            toolsJson || '[]');
-        if (ref.isNull(resultPtr)) throw new Error('llama: chatWithTools returned null');
-        return _readAndFree(this._lib, resultPtr);
     }
 
     // -----------------------------------------------------------------------
@@ -328,4 +249,3 @@ function load(modelPath) {
 }
 
 module.exports = { load, Engine };
-
