@@ -1,0 +1,12 @@
+{
+  "name": "person_extract",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "name": { "type": "string" },
+      "age":  { "type": "integer" }
+    },
+    "required": ["name", "age"],
+    "additionalProperties": false
+  }
+}

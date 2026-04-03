@@ -1,0 +1,211 @@
+# Taskfile.yml
+# Orchestrates the full llama-bindings build, test, and publish lifecycle.
+# Run `task --list` to see all available tasks.
+#
+# Upstream llama.cpp: https://github.com/ggml-org/llama.cpp
+#
+# Prerequisites:
+#   - task (https://taskfile.dev)
+#   - git, cmake, make/ninja
+#   - Go >= 1.21
+#   - JDK 21 + Maven
+#   - Node.js >= 18 + npm
+#   - Emscripten (for WASM target)
+
+version: '3'
+
+vars:
+  LLAMA_CPP_REPO: https://github.com/ggml-org/llama.cpp
+  LLAMA_CPP_DIR:  "{{.ROOT_DIR}}/third_party/llama.cpp"
+  BRIDGE_DIR:     "{{.ROOT_DIR}}/bridge"
+  BRIDGE_BUILD:   "{{.ROOT_DIR}}/bridge/build"
+  WASM_DIR:       "{{.ROOT_DIR}}/wasm"
+  GO_DIR:         "{{.ROOT_DIR}}/bindings/go"
+  JAVA_DIR:       "{{.ROOT_DIR}}/bindings/java"
+  JS_DIR:         "{{.ROOT_DIR}}/bindings/js-browser"
+
+# ---------------------------------------------------------------------------
+# Default
+# ---------------------------------------------------------------------------
+tasks:
+  default:
+    desc: Show available tasks
+    cmds:
+      - task --list
+
+# ---------------------------------------------------------------------------
+# Init / Update
+# ---------------------------------------------------------------------------
+  init:
+    desc: "Clone llama.cpp from https://github.com/ggml-org/llama.cpp and prepare workspace"
+    cmds:
+      - |
+        if [ ! -d "{{.LLAMA_CPP_DIR}}/.git" ]; then
+          git clone --depth 1 {{.LLAMA_CPP_REPO}} {{.LLAMA_CPP_DIR}}
+        else
+          echo "llama.cpp already cloned — run 'task update' to fetch latest."
+        fi
+      - mkdir -p {{.BRIDGE_BUILD}}
+      - mkdir -p {{.WASM_DIR}}/build
+
+  update:
+    desc: "Pull the latest llama.cpp from https://github.com/ggml-org/llama.cpp"
+    cmds:
+      - git -C {{.LLAMA_CPP_DIR}} fetch --depth 1 origin
+      - git -C {{.LLAMA_CPP_DIR}} reset --hard origin/HEAD
+
+# ---------------------------------------------------------------------------
+# Configure
+# ---------------------------------------------------------------------------
+  configure:
+    desc: Configure the native bridge with CMake
+    deps: [init]
+    cmds:
+      - |
+        cmake -S {{.BRIDGE_DIR}} \
+              -B {{.BRIDGE_BUILD}} \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DLLAMA_CPP_DIR={{.LLAMA_CPP_DIR}}
+
+# ---------------------------------------------------------------------------
+# Build — llama.cpp
+# ---------------------------------------------------------------------------
+  build-llama:
+    desc: "Build llama.cpp from https://github.com/ggml-org/llama.cpp (native)"
+    deps: [init]
+    cmds:
+      - cmake -S {{.LLAMA_CPP_DIR}} -B {{.LLAMA_CPP_DIR}}/build -DCMAKE_BUILD_TYPE=Release -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF
+      - cmake --build {{.LLAMA_CPP_DIR}}/build --config Release -j
+
+# ---------------------------------------------------------------------------
+# Build — bridge
+# ---------------------------------------------------------------------------
+  build-bridge:
+    desc: Build the native C bridge library (libllama_bridge)
+    deps: [build-llama, configure]
+    cmds:
+      - cmake --build {{.BRIDGE_BUILD}} --config Release -j
+
+# ---------------------------------------------------------------------------
+# Build — WASM
+# ---------------------------------------------------------------------------
+  build-wasm:
+    desc: Compile the bridge to WebAssembly via Emscripten
+    deps: [init]
+    cmds:
+      - |
+        emcmake cmake -S {{.BRIDGE_DIR}} \
+                      -B {{.WASM_DIR}}/build \
+                      -DCMAKE_BUILD_TYPE=Release \
+                      -DLLAMA_CPP_DIR={{.LLAMA_CPP_DIR}} \
+                      -DTARGET_WASM=ON
+      - cmake --build {{.WASM_DIR}}/build --config Release -j
+      - cp {{.WASM_DIR}}/build/llama_bridge.js  {{.JS_DIR}}/dist/
+      - cp {{.WASM_DIR}}/build/llama_bridge.wasm {{.JS_DIR}}/dist/
+
+# ---------------------------------------------------------------------------
+# Go
+# ---------------------------------------------------------------------------
+  build-go:
+    desc: Build the Go binding
+    deps: [build-bridge]
+    dir: "{{.GO_DIR}}"
+    cmds:
+      - go build ./...
+
+  test-go:
+    desc: Run Go tests
+    deps: [build-bridge]
+    dir: "{{.GO_DIR}}"
+    cmds:
+      - go test ./... -v -count=1
+
+  publish-go:
+    desc: Tag and publish the Go module
+    deps: [test-go]
+    cmds:
+      - |
+        echo "Tagging Go release. Set GO_VERSION env var (e.g. GO_VERSION=v0.1.0)."
+        : "${GO_VERSION:?GO_VERSION must be set, e.g. GO_VERSION=v0.1.0}"
+        git tag "go/${GO_VERSION}"
+        git push origin "go/${GO_VERSION}"
+        echo "Go module published: github.com/muthuishere/llama-bindings/go@${GO_VERSION}"
+
+# ---------------------------------------------------------------------------
+# Java
+# ---------------------------------------------------------------------------
+  build-java:
+    desc: Build the Java binding with Maven
+    deps: [build-bridge]
+    dir: "{{.JAVA_DIR}}"
+    cmds:
+      - mvn -B package -DskipTests -Dbridge.lib.dir={{.BRIDGE_BUILD}}
+
+  test-java:
+    desc: Run Java tests with Maven
+    deps: [build-bridge]
+    dir: "{{.JAVA_DIR}}"
+    cmds:
+      - mvn -B test -Dbridge.lib.dir={{.BRIDGE_BUILD}}
+
+  publish-java:
+    desc: Deploy the Java artifact to Maven repository
+    deps: [test-java]
+    dir: "{{.JAVA_DIR}}"
+    cmds:
+      - |
+        echo "Deploying Java artifact. Ensure MAVEN_REPOSITORY_URL and credentials are configured."
+        mvn -B deploy -Dbridge.lib.dir={{.BRIDGE_BUILD}}
+
+# ---------------------------------------------------------------------------
+# JavaScript / Browser
+# ---------------------------------------------------------------------------
+  build-js:
+    desc: Build the browser JS package
+    deps: [build-wasm]
+    dir: "{{.JS_DIR}}"
+    cmds:
+      - npm ci
+      - npm run build
+
+  test-js:
+    desc: Run JS browser binding tests
+    dir: "{{.JS_DIR}}"
+    cmds:
+      - npm ci
+      - npm test
+
+  publish-js:
+    desc: Publish the JS package to npm
+    deps: [test-js]
+    dir: "{{.JS_DIR}}"
+    cmds:
+      - npm publish --access public
+
+# ---------------------------------------------------------------------------
+# Combined
+# ---------------------------------------------------------------------------
+  test:
+    desc: Run all tests (Go + Java + JS)
+    cmds:
+      - task: test-go
+      - task: test-java
+      - task: test-js
+
+  build:
+    desc: Build all targets (bridge + Go + Java + JS)
+    cmds:
+      - task: build-bridge
+      - task: build-go
+      - task: build-java
+      - task: build-js
+
+# ---------------------------------------------------------------------------
+# Upgrade
+# ---------------------------------------------------------------------------
+  upgrade:
+    desc: "Pull latest llama.cpp from https://github.com/ggml-org/llama.cpp and rebuild bridge"
+    cmds:
+      - task: update
+      - task: build-bridge
+      - echo "Bridge rebuilt. Run 'task test' to verify nothing regressed."

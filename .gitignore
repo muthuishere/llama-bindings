@@ -1,0 +1,17 @@
+# Build artefacts
+bridge/build/
+wasm/build/*.js
+wasm/build/*.wasm
+bindings/js-browser/dist/*.js
+bindings/js-browser/dist/*.wasm
+bindings/js-browser/node_modules/
+bindings/java/target/
+bindings/go/llama/testdata/
+
+# llama.cpp source tree (cloned by `task init`)
+third_party/llama.cpp/*
+!third_party/llama.cpp/README.md
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,2 @@
+third_party/llama.cpp/*
+!third_party/llama.cpp/README.md

@@ -20,7 +20,7 @@
   ],
   "scripts": {
     "build": "node scripts/build.mjs",
-    "test": "node --experimental-vm-modules node_modules/.bin/jest",
+    "test": "node --experimental-vm-modules node_modules/.bin/jest --config jest.config.json",
     "lint": "eslint src/ test/",
     "prepublishOnly": "npm run build && npm test"
   },
