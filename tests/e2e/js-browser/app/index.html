@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<!--
+  tests/e2e/js-browser/app/index.html
+
+  Browser test harness for llama-bindings JS/WASM e2e tests.
+
+  Served by the Playwright web server from the project root, so imports from
+  /bindings/js-browser/src/ resolve correctly.
+
+  Model: Qwen2.5-0.5B-Instruct-GGUF
+    - When the WASM bridge is built (task build-wasm), the model is fetched
+      and real inference runs.
+    - Without the WASM build the stub module is used, which exercises the full
+      API surface with deterministic responses.
+
+  Playwright reads results via window.__llama_results and window.__llama_ready.
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>llama-bindings browser e2e</title>
+</head>
+<body>
+<script type="module">
+  import { LlamaChat }  from '/bindings/js-browser/src/chat.js';
+  import { LlamaEmbed } from '/bindings/js-browser/src/embed.js';
+
+  // Model to use — the stub module ignores this path.
+  // When the WASM bridge is available, this should be a reachable URL.
+  const MODEL_PATH = window.LLAMA_MODEL_PATH || 'qwen2.5-0.5b-instruct-q4_k_m.gguf';
+
+  window.__llama_ready   = false;
+  window.__llama_results = {};
+  window.__llama_error   = null;
+
+  async function runTests() {
+    const results = window.__llama_results;
+
+    // ------------------------------------------------------------------
+    // Chat — text mode
+    // ------------------------------------------------------------------
+    const chatEvents = [];
+    const chat = await LlamaChat.load(MODEL_PATH, {
+      onEvent: (e) => chatEvents.push(e.event),
+    });
+    try {
+      const textResp = await chat.chat({
+        messages: [{ role: 'user', content: 'Say hello in exactly one word.' }],
+        responseMode: 'text',
+      }, { temperature: 0.1, maxOutputTokens: 32 });
+      results.chatText = textResp;
+    } finally {
+      // keep chat open for subsequent calls
+    }
+
+    // ------------------------------------------------------------------
+    // Chat — JSON schema mode
+    // ------------------------------------------------------------------
+    const schemaResp = await chat.chat({
+      messages: [{ role: 'user', content: 'Alice is 30 years old. Extract data.' }],
+      responseMode: 'json_schema',
+      schema: {
+        name: 'person_extract',
+        schema: {
+          type: 'object',
+          properties: {
+            name: { type: 'string' },
+            age:  { type: 'integer' },
+          },
+          required: ['name', 'age'],
+          additionalProperties: false,
+        },
+      },
+    }, { temperature: 0.0, maxOutputTokens: 64 });
+    results.chatSchema = schemaResp;
+
+    // ------------------------------------------------------------------
+    // Chat — tool call mode
+    // ------------------------------------------------------------------
+    const toolResp = await chat.chat({
+      messages: [{ role: 'user', content: 'What is the weather in Chennai?' }],
+      responseMode: 'tool_call',
+      tools: [{
+        name: 'lookup_weather',
+        description: 'Get current weather for a city',
+        parameters: {
+          type: 'object',
+          properties: { city: { type: 'string' } },
+          required: ['city'],
+          additionalProperties: false,
+        },
+      }],
+      toolChoice: 'auto',
+    }, { temperature: 0.1, maxOutputTokens: 64 });
+    results.chatTool = toolResp;
+
+    chat.close();
+    results.chatEvents = chatEvents;
+
+    // ------------------------------------------------------------------
+    // Embed
+    // ------------------------------------------------------------------
+    const embedEvents = [];
+    const embed = await LlamaEmbed.load(MODEL_PATH, {
+      onEvent: (e) => embedEvents.push(e.event),
+    });
+    try {
+      const vec = await embed.embed('semantic search example');
+      results.embedVector = Array.from(vec);   // Float32Array → plain array for serialization
+      results.embedLength = vec.length;
+    } finally {
+      embed.close();
+    }
+    results.embedEvents = embedEvents;
+  }
+
+  runTests()
+    .then(() => { window.__llama_ready = true; })
+    .catch((err) => {
+      window.__llama_error = err.message;
+      window.__llama_ready = true;
+    });
+</script>
+</body>
+</html>

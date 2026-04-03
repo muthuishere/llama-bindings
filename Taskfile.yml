@@ -15,14 +15,20 @@
 version: '3'
 
 vars:
-  LLAMA_CPP_REPO: https://github.com/ggml-org/llama.cpp
-  LLAMA_CPP_DIR:  "{{.ROOT_DIR}}/third_party/llama.cpp"
-  BRIDGE_DIR:     "{{.ROOT_DIR}}/bridge"
-  BRIDGE_BUILD:   "{{.ROOT_DIR}}/bridge/build"
-  WASM_DIR:       "{{.ROOT_DIR}}/wasm"
-  GO_DIR:         "{{.ROOT_DIR}}/bindings/go"
-  JAVA_DIR:       "{{.ROOT_DIR}}/bindings/java"
-  JS_DIR:         "{{.ROOT_DIR}}/bindings/js-browser"
+  LLAMA_CPP_REPO:  https://github.com/ggml-org/llama.cpp
+  LLAMA_CPP_DIR:   "{{.ROOT_DIR}}/third_party/llama.cpp"
+  BRIDGE_DIR:      "{{.ROOT_DIR}}/bridge"
+  BRIDGE_BUILD:    "{{.ROOT_DIR}}/bridge/build"
+  WASM_DIR:        "{{.ROOT_DIR}}/wasm"
+  GO_DIR:          "{{.ROOT_DIR}}/bindings/go"
+  JAVA_DIR:        "{{.ROOT_DIR}}/bindings/java"
+  JS_DIR:          "{{.ROOT_DIR}}/bindings/js-browser"
+  E2E_DIR:         "{{.ROOT_DIR}}/tests/e2e"
+  MODELS_DIR:      "{{.ROOT_DIR}}/tests/models"
+  # Qwen2.5-0.5B-Instruct GGUF used for e2e tests (~400 MB).
+  # Source: https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF
+  CHAT_MODEL:      "{{.MODELS_DIR}}/qwen2.5-0.5b-instruct-q4_k_m.gguf"
+  EMBED_MODEL:     "{{.MODELS_DIR}}/qwen2.5-0.5b-instruct-q4_k_m.gguf"
 
 # ---------------------------------------------------------------------------
 # Default
@@ -199,6 +205,53 @@ tasks:
       - task: build-go
       - task: build-java
       - task: build-js
+
+# ---------------------------------------------------------------------------
+# Download model
+# ---------------------------------------------------------------------------
+  download-model:
+    desc: "Download Qwen2.5-0.5B-Instruct GGUF for e2e tests (~400 MB from HuggingFace)"
+    cmds:
+      - bash {{.E2E_DIR}}/download_model.sh
+
+# ---------------------------------------------------------------------------
+# E2E tests  (require: task build-bridge && task download-model)
+# ---------------------------------------------------------------------------
+  e2e-go:
+    desc: "Run Go e2e tests against the real Qwen2.5 model (requires build-bridge + download-model)"
+    dir: "{{.E2E_DIR}}/go"
+    cmds:
+      - |
+        CGO_CFLAGS="-I{{.ROOT_DIR}}/bridge/include" \
+        CGO_LDFLAGS="-L{{.BRIDGE_BUILD}} -lllama_bridge" \
+        LLAMA_CHAT_MODEL={{.CHAT_MODEL}} \
+        LLAMA_EMBED_MODEL={{.EMBED_MODEL}} \
+        go test -tags e2e ./... -v -count=1
+
+  e2e-java:
+    desc: "Run Java e2e tests against the real Qwen2.5 model (requires build-bridge + download-model)"
+    dir: "{{.JAVA_DIR}}"
+    cmds:
+      - |
+        mvn -B test -Pe2e \
+            -Dbridge.lib.dir={{.BRIDGE_BUILD}} \
+            -DLLAMA_CHAT_MODEL={{.CHAT_MODEL}} \
+            -DLLAMA_EMBED_MODEL={{.EMBED_MODEL}}
+
+  e2e-js:
+    desc: "Run Playwright browser e2e tests for the JS binding (Chromium)"
+    dir: "{{.E2E_DIR}}/js-browser"
+    cmds:
+      - npm ci
+      - npx playwright install chromium
+      - npx playwright test
+
+  e2e:
+    desc: "Run all e2e tests (Go + Java + browser JS via Playwright)"
+    cmds:
+      - task: e2e-go
+      - task: e2e-java
+      - task: e2e-js
 
 # ---------------------------------------------------------------------------
 # Upgrade
