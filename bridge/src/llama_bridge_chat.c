@@ -148,13 +148,32 @@ char* bridge_chat_infer(llama_chat_engine_impl_t* impl,
                 "chat_infer_start", "chat", "generation", 0,
                 "Chat inference started");
 
-    /* Validate that "messages" key is present. */
-    if (!strstr(request_json, "\"messages\"")) {
-        bridge_emit(impl->on_event, impl->user_data,
-                    "chat_infer_failure", "chat", NULL, 0,
-                    "Missing messages field");
-        return bridge_json_error("INVALID_REQUEST",
-                                 "messages field is required");
+    /* Validate that "messages" key is present and non-empty (not null or []).
+     * A valid messages array looks like: "messages":[{...
+     * Invalid: "messages":null  or  "messages":[]
+     */
+    {
+        const char* msg_ptr = strstr(request_json, "\"messages\"");
+        if (!msg_ptr) {
+            bridge_emit(impl->on_event, impl->user_data,
+                        "chat_infer_failure", "chat", NULL, 0,
+                        "Missing messages field");
+            return bridge_json_error("INVALID_REQUEST",
+                                     "messages field is required");
+        }
+        /* Skip past "messages": to the value. */
+        msg_ptr += strlen("\"messages\"");
+        while (*msg_ptr == ' ' || *msg_ptr == '\t' || *msg_ptr == ':') {
+            msg_ptr++;
+        }
+        /* The value must start with '[' and not be empty "[]" or "null". */
+        if (*msg_ptr != '[' || *(msg_ptr + 1) == ']') {
+            bridge_emit(impl->on_event, impl->user_data,
+                        "chat_infer_failure", "chat", NULL, 0,
+                        "messages array is empty or null");
+            return bridge_json_error("INVALID_REQUEST",
+                                     "messages array must contain at least one message");
+        }
     }
 
     int mode = detect_response_mode(request_json);
