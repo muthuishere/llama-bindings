@@ -43,6 +43,7 @@ public final class ChatEngine implements AutoCloseable {
      */
     public static ChatEngine load(String modelPath, LoadOptions opts)
             throws LlamaException {
+        NativeLibrary.checkAvailable();
         Arena arena = Arena.ofConfined();
         try {
             MemorySegment cPath = arena.allocateFrom(modelPath, StandardCharsets.UTF_8);

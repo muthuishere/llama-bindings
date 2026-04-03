@@ -21,3 +21,11 @@ third_party/llama.cpp/*
 # OS
 .DS_Store
 Thumbs.db
+
+# Local environment (copy .env.sample to .env for local dev, never commit .env)
+.env
+
+# Prebuilt native binaries are intentionally tracked — CI populates them before
+# publishing so that `go get` and Maven fat-JAR consumers get a working binary.
+# Do NOT add bindings/go/llama/prebuilt/ or bindings/java/src/main/resources/native/
+# to this ignore list.

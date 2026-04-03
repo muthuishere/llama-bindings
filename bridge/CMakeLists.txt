@@ -32,16 +32,46 @@ target_include_directories(llama_bridge
 
 # -----------------------------------------------------------------------
 # Link llama.cpp once it is built (third_party/llama.cpp/build)
+#
+# Use whole-archive / force_load so that every symbol from the static
+# libs is pulled into the shared library, making it fully self-contained.
+# Users can load libllama_bridge.so / .dylib / .dll without installing
+# llama.cpp separately.
 # -----------------------------------------------------------------------
 if(EXISTS "${LLAMA_CPP_DIR}/build/libllama.a")
-    target_link_libraries(llama_bridge PRIVATE
+    set(LLAMA_STATIC_LIBS
         "${LLAMA_CPP_DIR}/build/libllama.a"
         "${LLAMA_CPP_DIR}/build/ggml/src/libggml.a"
     )
 elseif(EXISTS "${LLAMA_CPP_DIR}/build/src/libllama.a")
-    target_link_libraries(llama_bridge PRIVATE
+    set(LLAMA_STATIC_LIBS
         "${LLAMA_CPP_DIR}/build/src/libllama.a"
     )
+else()
+    set(LLAMA_STATIC_LIBS "")
+endif()
+
+if(LLAMA_STATIC_LIBS)
+    if(APPLE)
+        # macOS: -force_load includes every object file from the archive.
+        foreach(_lib ${LLAMA_STATIC_LIBS})
+            target_link_libraries(llama_bridge PRIVATE "-Wl,-force_load,${_lib}")
+        endforeach()
+    elseif(UNIX)
+        # Linux / other ELF: --whole-archive / --no-whole-archive wraps the
+        # static libs so every object is included in the shared library.
+        target_link_libraries(llama_bridge PRIVATE
+            "-Wl,--whole-archive"
+            ${LLAMA_STATIC_LIBS}
+            "-Wl,--no-whole-archive"
+        )
+    elseif(WIN32)
+        # MSVC / MinGW: /WHOLEARCHIVE includes all objects.
+        foreach(_lib ${LLAMA_STATIC_LIBS})
+            target_link_options(llama_bridge PRIVATE "/WHOLEARCHIVE:${_lib}")
+        endforeach()
+        target_link_libraries(llama_bridge PRIVATE ${LLAMA_STATIC_LIBS})
+    endif()
 endif()
 
 # -----------------------------------------------------------------------

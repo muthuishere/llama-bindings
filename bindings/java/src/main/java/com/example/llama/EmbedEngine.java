@@ -34,6 +34,7 @@ public final class EmbedEngine implements AutoCloseable {
      */
     public static EmbedEngine load(String modelPath, LoadOptions opts)
             throws LlamaException {
+        NativeLibrary.checkAvailable();
         Arena arena = Arena.ofConfined();
         try {
             MemorySegment cPath = arena.allocateFrom(modelPath, StandardCharsets.UTF_8);
