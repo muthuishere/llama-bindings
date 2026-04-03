@@ -4,6 +4,7 @@ import (
 "encoding/json"
 "runtime"
 "sync"
+"sync/atomic"
 "unsafe"
 
 "github.com/ebitengine/purego"
@@ -14,12 +15,13 @@ import (
 type EmbedEngine struct {
 mu      sync.Mutex
 handle  uintptr
+cbKey   uintptr // stable registry key for this engine's callback
 onEvent EventCallback
 closed  bool
-
-// cbPtr holds the purego callback function pointer for the lifetime of the engine.
-cbPtr uintptr
 }
+
+// embedNextKey is an atomic counter used to generate stable, unique callback keys.
+var embedNextKey uint64
 
 var (
 embedCallbackMu sync.RWMutex
@@ -27,6 +29,7 @@ embedCallbacks  = make(map[uintptr]EventCallback)
 )
 
 // embedEventCallback is a C-callable function pointer created by purego.NewCallback.
+// userData is the stable cbKey assigned before calling llama_embed_create.
 var embedEventCallback = purego.NewCallback(func(eventJSONPtr unsafe.Pointer, userData uintptr) {
 embedCallbackMu.RLock()
 cb, ok := embedCallbacks[userData]
@@ -47,30 +50,35 @@ if err := checkBridge(); err != nil {
 return nil, err
 }
 
-pathBuf := cStringBytes(modelPath)
-
+// Register callback BEFORE calling llama_embed_create so that load-time
+// events (e.g. open_model_file) are captured.
+var cbKey uintptr
 var cbPtr uintptr
 if opts.OnEvent != nil {
+cbKey = uintptr(atomic.AddUint64(&embedNextKey, 1))
+embedCallbackMu.Lock()
+embedCallbacks[cbKey] = opts.OnEvent
+embedCallbackMu.Unlock()
 cbPtr = embedEventCallback
 }
 
-handle := llamaEmbedCreate(bufPtr(pathBuf), cbPtr, 0)
+pathBuf := cStringBytes(modelPath)
+handle := llamaEmbedCreate(bufPtr(pathBuf), cbPtr, cbKey)
 runtime.KeepAlive(pathBuf)
 
 if handle == 0 {
-return nil, &LlamaError{Code: ErrCodeModelLoadFailed, Message: "llama_embed_create returned NULL"}
-}
-
-if opts.OnEvent != nil {
+if cbKey != 0 {
 embedCallbackMu.Lock()
-embedCallbacks[handle] = opts.OnEvent
+delete(embedCallbacks, cbKey)
 embedCallbackMu.Unlock()
+}
+return nil, &LlamaError{Code: ErrCodeModelLoadFailed, Message: "llama_embed_create returned NULL"}
 }
 
 return &EmbedEngine{
 handle:  handle,
+cbKey:   cbKey,
 onEvent: opts.OnEvent,
-cbPtr:   cbPtr,
 }, nil
 }
 
@@ -119,9 +127,11 @@ return
 }
 e.closed = true
 
+if e.cbKey != 0 {
 embedCallbackMu.Lock()
-delete(embedCallbacks, e.handle)
+delete(embedCallbacks, e.cbKey)
 embedCallbackMu.Unlock()
+}
 
 llamaEmbedDestroy(e.handle)
 e.handle = 0

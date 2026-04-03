@@ -4,6 +4,7 @@ import (
 "encoding/json"
 "runtime"
 "sync"
+"sync/atomic"
 "unsafe"
 
 "github.com/ebitengine/purego"
@@ -14,15 +15,16 @@ import (
 type ChatEngine struct {
 mu      sync.Mutex
 handle  uintptr
+cbKey   uintptr // stable registry key for this engine's callback
 onEvent EventCallback
 closed  bool
-
-// cbPtr holds the purego callback function pointer for the lifetime of the engine.
-cbPtr uintptr
 }
 
-// callbackRegistry maps engine handle (uintptr) → EventCallback so the bridge
-// callback shim can dispatch to the correct Go function.
+// chatNextKey is an atomic counter used to generate stable, unique callback keys.
+// Using a counter (not a pointer address) avoids GC-related instability.
+var chatNextKey uint64
+
+// callbackRegistry maps stable cbKey → EventCallback.
 var (
 callbackMu    sync.RWMutex
 chatCallbacks = make(map[uintptr]EventCallback)
@@ -30,7 +32,7 @@ chatCallbacks = make(map[uintptr]EventCallback)
 
 // chatEventCallback is a C-callable function pointer created by purego.NewCallback.
 // It receives observability events from the bridge and dispatches to Go callbacks.
-// userData carries the engine handle, used as the registry key.
+// userData is the stable cbKey assigned before calling llama_chat_create.
 var chatEventCallback = purego.NewCallback(func(eventJSONPtr unsafe.Pointer, userData uintptr) {
 callbackMu.RLock()
 cb, ok := chatCallbacks[userData]
@@ -52,31 +54,35 @@ if err := checkBridge(); err != nil {
 return nil, err
 }
 
-pathBuf := cStringBytes(modelPath)
-
+// Register the callback BEFORE calling llama_chat_create so that any events
+// emitted during model loading (e.g. open_model_file) are captured.
+var cbKey uintptr
 var cbPtr uintptr
 if opts.OnEvent != nil {
+cbKey = uintptr(atomic.AddUint64(&chatNextKey, 1))
+callbackMu.Lock()
+chatCallbacks[cbKey] = opts.OnEvent
+callbackMu.Unlock()
 cbPtr = chatEventCallback
 }
 
-// Pass 0 as userData; we register the callback keyed by the returned handle.
-handle := llamaChatCreate(bufPtr(pathBuf), cbPtr, 0)
+pathBuf := cStringBytes(modelPath)
+handle := llamaChatCreate(bufPtr(pathBuf), cbPtr, cbKey)
 runtime.KeepAlive(pathBuf)
 
 if handle == 0 {
-return nil, &LlamaError{Code: ErrCodeModelLoadFailed, Message: "llama_chat_create returned NULL"}
-}
-
-if opts.OnEvent != nil {
+if cbKey != 0 {
 callbackMu.Lock()
-chatCallbacks[handle] = opts.OnEvent
+delete(chatCallbacks, cbKey)
 callbackMu.Unlock()
+}
+return nil, &LlamaError{Code: ErrCodeModelLoadFailed, Message: "llama_chat_create returned NULL"}
 }
 
 return &ChatEngine{
 handle:  handle,
+cbKey:   cbKey,
 onEvent: opts.OnEvent,
-cbPtr:   cbPtr,
 }, nil
 }
 
@@ -144,9 +150,11 @@ return
 }
 e.closed = true
 
+if e.cbKey != 0 {
 callbackMu.Lock()
-delete(chatCallbacks, e.handle)
+delete(chatCallbacks, e.cbKey)
 callbackMu.Unlock()
+}
 
 llamaChatDestroy(e.handle)
 e.handle = 0

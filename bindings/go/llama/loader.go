@@ -3,7 +3,6 @@ package llama
 import (
 "fmt"
 "os"
-"path/filepath"
 "sync"
 "unsafe"
 
@@ -12,18 +11,16 @@ import (
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Package-level bridge function variables.
-// Populated by initBridge() in init() and called by ChatEngine / EmbedEngine.
+// Populated by init() and called by ChatEngine / EmbedEngine.
 //
-// Parameter / return types:
-//   - unsafe.Pointer for string buffers and C-heap pointers (avoids uintptr
-//     arithmetic that would trigger go vet "possible misuse of unsafe.Pointer")
-//   - uintptr for opaque engine handles (used as map keys for callbacks)
-//
+// Parameter / return types use unsafe.Pointer for string buffers and C-heap
+// pointers so that go vet is satisfied — no uintptr arithmetic conversions.
+// Opaque engine handles use uintptr (used as map keys for callbacks).
 // ─────────────────────────────────────────────────────────────────────────────
 
 var (
 bridgeOnce sync.Once
-bridgeErr  error // non-nil means the native library could not be loaded
+bridgeErr  error // non-nil when the native library could not be loaded
 
 // Chat
 llamaChatCreate    func(modelPath unsafe.Pointer, onEvent, userData uintptr) uintptr
@@ -98,11 +95,12 @@ return lib, nil
 return 0, fmt.Errorf("libllama_bridge not found — run `task build-bridge` or use a published release that bundles prebuilt natives")
 }
 
-// extractLibToTemp writes data to a uniquely named temporary file and returns
-// its path together with a cleanup function that removes it.
+// extractLibToTemp writes data to a uniquely named temporary file that already
+// carries the correct extension (e.g. .dylib, .so, .dll).
+// The pattern "llama_bridge_*_<libName>" keeps the unique random infix while
+// preserving the extension, so no renaming is needed.
 func extractLibToTemp(data []byte, libName string) (string, func(), error) {
-dir := os.TempDir()
-f, err := os.CreateTemp(dir, "llama_bridge_*_"+libName)
+f, err := os.CreateTemp(os.TempDir(), "llama_bridge_*_"+libName)
 if err != nil {
 return "", nil, err
 }
@@ -123,13 +121,6 @@ cleanup()
 return "", nil, err
 }
 
-// Rename so the file has the correct extension (macOS .dylib requires this).
-extPath := filepath.Join(dir, libName)
-if err := os.Rename(path, extPath); err == nil {
-path = extPath
-cleanup = func() { os.Remove(path) }
-}
-
 return path, cleanup, nil
 }
 
@@ -138,8 +129,8 @@ return path, cleanup, nil
 // ─────────────────────────────────────────────────────────────────────────────
 
 // cStringBytes returns a NUL-terminated byte slice for s.
-// The caller must keep the returned slice alive (runtime.KeepAlive) for the
-// duration of any C call that uses the pointer.
+// The caller must keep the slice alive via runtime.KeepAlive for any C call
+// that uses the pointer obtained from bufPtr(b).
 func cStringBytes(s string) []byte {
 b := make([]byte, len(s)+1)
 copy(b, s)
@@ -161,8 +152,8 @@ func readCString(ptr unsafe.Pointer) string {
 if ptr == nil {
 return ""
 }
-// Cast to a large fixed-size array — the standard Go FFI idiom that avoids
-// uintptr arithmetic and is approved by go vet.
+// Cast to a fixed-size array — the standard Go FFI idiom that avoids
+// uintptr arithmetic in unsafe.Pointer conversions (approved by go vet).
 const maxLen = 64 * 1024 // 64 KB is ample for any JSON response
 cptr := (*[maxLen]byte)(ptr)
 n := 0
@@ -172,10 +163,18 @@ n++
 return string(cptr[:n])
 }
 
+// maxEmbedDim is the maximum number of float32 values we will read from a
+// C-heap float array. 1<<22 = 4 M floats = 16 MB; well above any embedding
+// dimension in current models while staying within safe allocation bounds.
+const maxEmbedDim = 1 << 22
+
 // readFloats copies n float32 values from the C array at ptr into a Go slice.
+// Returns nil if n is out of the expected range.
 func readFloats(ptr unsafe.Pointer, n int) []float32 {
-const maxElems = 1 << 24 // 16M floats maximum
-cptr := (*[maxElems]float32)(ptr)
+if n <= 0 || n > maxEmbedDim {
+return nil
+}
+cptr := (*[maxEmbedDim]float32)(ptr)
 result := make([]float32, n)
 copy(result, cptr[:n])
 return result

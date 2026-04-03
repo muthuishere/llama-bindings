@@ -17,6 +17,9 @@ concurrency:
   group: e2e-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   e2e:
     name: E2E (${{ inputs.runner_os || 'ubuntu-latest' }})
