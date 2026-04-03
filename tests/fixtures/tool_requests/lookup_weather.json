@@ -1,0 +1,12 @@
+{
+  "name": "lookup_weather",
+  "description": "Get weather by city",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "city": { "type": "string" }
+    },
+    "required": ["city"],
+    "additionalProperties": false
+  }
+}

@@ -1,0 +1,23 @@
+# Build artefacts
+bridge/build/
+wasm/build/*.js
+wasm/build/*.wasm
+bindings/js-browser/dist/*.js
+bindings/js-browser/dist/*.wasm
+bindings/js-browser/node_modules/
+bindings/java/target/
+bindings/go/llama/testdata/
+
+# E2E
+tests/models/*.gguf
+tests/e2e/js-browser/node_modules/
+tests/e2e/js-browser/playwright-report/
+tests/e2e/js-browser/test-results/
+
+# llama.cpp source tree (cloned by `task init`)
+third_party/llama.cpp/*
+!third_party/llama.cpp/README.md
+
+# OS
+.DS_Store
+Thumbs.db

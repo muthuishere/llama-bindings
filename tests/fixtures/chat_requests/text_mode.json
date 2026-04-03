@@ -1,0 +1,10 @@
+{
+  "messages": [
+    { "role": "user", "content": "Say hello in one short sentence." }
+  ],
+  "response_mode": "text",
+  "generation": {
+    "temperature": 0.2,
+    "max_output_tokens": 64
+  }
+}

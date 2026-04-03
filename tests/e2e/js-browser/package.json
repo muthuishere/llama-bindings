@@ -1,0 +1,19 @@
+{
+  "name": "@llama-bindings/e2e-js-browser",
+  "version": "0.1.0",
+  "description": "Playwright end-to-end tests for the llama-bindings browser JS binding",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "install-browsers": "playwright install chromium"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.44.0",
+    "serve": "^14.2.3"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

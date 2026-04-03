@@ -1,0 +1,25 @@
+{
+  "messages": [
+    { "role": "user", "content": "What is the weather in Chennai?" }
+  ],
+  "response_mode": "tool_call",
+  "tools": [
+    {
+      "name": "lookup_weather",
+      "description": "Get weather by city",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "city": { "type": "string" }
+        },
+        "required": ["city"],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "tool_choice": "auto",
+  "generation": {
+    "temperature": 0.2,
+    "max_output_tokens": 64
+  }
+}
