@@ -1,0 +1,151 @@
+name: E2E Tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner_os:
+        description: 'OS to run e2e tests on'
+        required: false
+        default: 'ubuntu-latest'
+        type: choice
+        options: [ubuntu-latest, macos-latest]
+  schedule:
+    # Nightly at 02:00 UTC
+    - cron: '0 2 * * *'
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: E2E (${{ inputs.runner_os || 'ubuntu-latest' }})
+    runs-on: ${{ inputs.runner_os || 'ubuntu-latest' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── Tools ──────────────────────────────────────────────────────────────
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+          cache-dependency-path: bindings/go/go.sum
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '22'
+          cache: maven
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install system packages (Ubuntu)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build
+
+      - name: Install system packages (macOS)
+        if: runner.os == 'macOS'
+        run: brew install cmake ninja
+
+      # ── llama.cpp ──────────────────────────────────────────────────────────
+      - name: Cache llama.cpp build
+        uses: actions/cache@v4
+        id: cache-llama
+        with:
+          path: third_party/llama.cpp
+          key: llama-cpp-e2e-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('third_party/llama.cpp/README.md') }}
+
+      - name: Clone llama.cpp
+        if: steps.cache-llama.outputs.cache-hit != 'true'
+        run: git clone --depth 1 https://github.com/ggml-org/llama.cpp third_party/llama.cpp
+
+      - name: Build llama.cpp
+        if: steps.cache-llama.outputs.cache-hit != 'true'
+        run: |
+          cmake -S third_party/llama.cpp \
+                -B third_party/llama.cpp/build \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DLLAMA_BUILD_TESTS=OFF \
+                -DLLAMA_BUILD_EXAMPLES=OFF
+          cmake --build third_party/llama.cpp/build --config Release -j$(nproc 2>/dev/null || sysctl -n hw.logicalcpu)
+
+      # ── Bridge ─────────────────────────────────────────────────────────────
+      - name: Configure & build bridge
+        run: |
+          cmake -S bridge \
+                -B bridge/build \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DLLAMA_CPP_DIR=${{ github.workspace }}/third_party/llama.cpp
+          cmake --build bridge/build --config Release -j$(nproc 2>/dev/null || sysctl -n hw.logicalcpu)
+
+      # ── Download model ──────────────────────────────────────────────────────
+      - name: Cache model
+        uses: actions/cache@v4
+        id: cache-model
+        with:
+          path: tests/models
+          key: qwen2.5-0.5b-q4_k_m
+
+      - name: Download model
+        if: steps.cache-model.outputs.cache-hit != 'true'
+        env:
+          HF_TOKEN: ${{ secrets.HUGGING_FACE_TOKEN }}
+        run: |
+          mkdir -p tests/models
+          URL="https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf"
+          DEST="tests/models/qwen2.5-0.5b-instruct-q4_k_m.gguf"
+          if [ -n "${HF_TOKEN}" ]; then
+            curl -L --progress-bar -H "Authorization: Bearer ${HF_TOKEN}" -o "${DEST}" "${URL}"
+          else
+            curl -L --progress-bar -o "${DEST}" "${URL}"
+          fi
+
+      # ── Go e2e ─────────────────────────────────────────────────────────────
+      - name: Go e2e tests
+        working-directory: tests/e2e/go
+        env:
+          LD_LIBRARY_PATH: "${{ github.workspace }}/bridge/build"
+          DYLD_LIBRARY_PATH: "${{ github.workspace }}/bridge/build"
+          LLAMA_CHAT_MODEL: "${{ github.workspace }}/tests/models/qwen2.5-0.5b-instruct-q4_k_m.gguf"
+          LLAMA_EMBED_MODEL: "${{ github.workspace }}/tests/models/qwen2.5-0.5b-instruct-q4_k_m.gguf"
+        run: go test -tags e2e ./... -v -count=1
+
+      # ── Java e2e ───────────────────────────────────────────────────────────
+      - name: Java e2e tests
+        working-directory: bindings/java
+        env:
+          LLAMA_CHAT_MODEL: "${{ github.workspace }}/tests/models/qwen2.5-0.5b-instruct-q4_k_m.gguf"
+          LLAMA_EMBED_MODEL: "${{ github.workspace }}/tests/models/qwen2.5-0.5b-instruct-q4_k_m.gguf"
+        run: |
+          mvn -B test -Pe2e \
+            -Dbridge.lib.dir=${{ github.workspace }}/bridge/build \
+            -DLLAMA_CHAT_MODEL="${{ github.workspace }}/tests/models/qwen2.5-0.5b-instruct-q4_k_m.gguf" \
+            -DLLAMA_EMBED_MODEL="${{ github.workspace }}/tests/models/qwen2.5-0.5b-instruct-q4_k_m.gguf"
+
+      # ── JS browser e2e (Playwright) ────────────────────────────────────────
+      - name: Install Playwright + Chromium
+        working-directory: tests/e2e/js-browser
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: JS browser e2e tests
+        working-directory: tests/e2e/js-browser
+        run: npx playwright test
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-${{ runner.os }}
+          path: tests/e2e/js-browser/playwright-report/
+          retention-days: 7

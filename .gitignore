@@ -6,7 +6,15 @@ bindings/js-browser/dist/*.js
 bindings/js-browser/dist/*.wasm
 bindings/js-browser/node_modules/
 bindings/java/target/
-bindings/go/llama/testdata/
+# Exclude real (large) model files from the Go test data directory,
+# but allow the tiny stub files used for unit tests.
+bindings/go/llama/testdata/*.gguf
+!bindings/go/llama/testdata/dummy.gguf
+!bindings/go/llama/testdata/dummy-embed.gguf
+# Same for Java unit test data.
+bindings/java/testdata/*.gguf
+!bindings/java/testdata/dummy.gguf
+!bindings/java/testdata/dummy-embed.gguf
 
 # E2E
 tests/models/*.gguf
@@ -21,3 +29,11 @@ third_party/llama.cpp/*
 # OS
 .DS_Store
 Thumbs.db
+
+# Local environment (copy .env.sample to .env for local dev, never commit .env)
+.env
+
+# Prebuilt native binaries are intentionally tracked — CI populates them before
+# publishing so that `go get` and Maven fat-JAR consumers get a working binary.
+# Do NOT add bindings/go/llama/prebuilt/ or bindings/java/src/main/resources/native/
+# to this ignore list.

@@ -8,6 +8,7 @@
 #include "../include/llama_bridge.h"
 #include "llama_bridge_internal.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -21,6 +22,18 @@ llama_chat_engine_t llama_chat_create(const char* model_path,
 {
     if (!model_path) {
         return NULL;
+    }
+
+    /* Verify the model file is accessible before allocating any resources. */
+    {
+        FILE* f = fopen(model_path, "rb");
+        if (!f) {
+            bridge_emit(on_event, user_data,
+                        "chat_engine_create_failure", "chat", NULL, 0,
+                        "Model file not found or not accessible");
+            return NULL;
+        }
+        fclose(f);
     }
 
     llama_chat_engine_impl_t* impl =
@@ -93,6 +106,18 @@ llama_embed_engine_t llama_embed_create(const char* model_path,
 {
     if (!model_path) {
         return NULL;
+    }
+
+    /* Verify the model file is accessible before allocating any resources. */
+    {
+        FILE* f = fopen(model_path, "rb");
+        if (!f) {
+            bridge_emit(on_event, user_data,
+                        "embed_engine_create_failure", "embed", NULL, 0,
+                        "Model file not found or not accessible");
+            return NULL;
+        }
+        fclose(f);
     }
 
     llama_embed_engine_impl_t* impl =

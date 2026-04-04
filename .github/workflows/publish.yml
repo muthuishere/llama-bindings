@@ -1,0 +1,359 @@
+name: Publish
+
+on:
+  push:
+    tags:
+      - 'go/v*'       # e.g. go/v0.2.0  → publishes Go module
+      - 'java/v*'     # e.g. java/v0.2.0 → publishes Java artifact
+      - 'js/v*'       # e.g. js/v0.2.0   → publishes npm package
+      - 'v*'          # e.g. v0.2.0       → publishes all three
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Job 1-3: Build the native bridge on each target platform
+# ═══════════════════════════════════════════════════════════════════════════════
+jobs:
+  build-bridge-linux-x86_64:
+    name: Build bridge (Linux x86_64)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build
+
+      - name: Cache llama.cpp
+        uses: actions/cache@v4
+        id: cache-llama
+        with:
+          path: third_party/llama.cpp
+          key: llama-cpp-linux-x86_64-${{ hashFiles('third_party/llama.cpp/README.md') }}
+
+      - name: Clone llama.cpp
+        if: steps.cache-llama.outputs.cache-hit != 'true'
+        run: git clone --depth 1 https://github.com/ggml-org/llama.cpp third_party/llama.cpp
+
+      - name: Build llama.cpp
+        if: steps.cache-llama.outputs.cache-hit != 'true'
+        run: |
+          cmake -S third_party/llama.cpp -B third_party/llama.cpp/build \
+            -DCMAKE_BUILD_TYPE=Release -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF
+          cmake --build third_party/llama.cpp/build --config Release -j$(nproc)
+
+      - name: Build bridge
+        run: |
+          cmake -S bridge -B bridge/build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLLAMA_CPP_DIR=${{ github.workspace }}/third_party/llama.cpp
+          cmake --build bridge/build --config Release -j$(nproc)
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bridge-linux-x86_64
+          path: bridge/build/libllama_bridge.so
+          retention-days: 1
+
+  build-bridge-darwin-x86_64:
+    name: Build bridge (macOS x86_64)
+    runs-on: macos-13
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install CMake
+        run: brew install cmake ninja
+
+      - name: Cache llama.cpp
+        uses: actions/cache@v4
+        id: cache-llama
+        with:
+          path: third_party/llama.cpp
+          key: llama-cpp-darwin-x86_64-${{ hashFiles('third_party/llama.cpp/README.md') }}
+
+      - name: Clone llama.cpp
+        if: steps.cache-llama.outputs.cache-hit != 'true'
+        run: git clone --depth 1 https://github.com/ggml-org/llama.cpp third_party/llama.cpp
+
+      - name: Build llama.cpp
+        if: steps.cache-llama.outputs.cache-hit != 'true'
+        run: |
+          cmake -S third_party/llama.cpp -B third_party/llama.cpp/build \
+            -DCMAKE_BUILD_TYPE=Release -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF
+          cmake --build third_party/llama.cpp/build --config Release -j$(sysctl -n hw.logicalcpu)
+
+      - name: Build bridge
+        run: |
+          cmake -S bridge -B bridge/build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLLAMA_CPP_DIR=${{ github.workspace }}/third_party/llama.cpp
+          cmake --build bridge/build --config Release -j$(sysctl -n hw.logicalcpu)
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bridge-darwin-x86_64
+          path: bridge/build/libllama_bridge.dylib
+          retention-days: 1
+
+  build-bridge-darwin-arm64:
+    name: Build bridge (macOS arm64)
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install CMake
+        run: brew install cmake ninja
+
+      - name: Cache llama.cpp
+        uses: actions/cache@v4
+        id: cache-llama
+        with:
+          path: third_party/llama.cpp
+          key: llama-cpp-darwin-arm64-${{ hashFiles('third_party/llama.cpp/README.md') }}
+
+      - name: Clone llama.cpp
+        if: steps.cache-llama.outputs.cache-hit != 'true'
+        run: git clone --depth 1 https://github.com/ggml-org/llama.cpp third_party/llama.cpp
+
+      - name: Build llama.cpp
+        if: steps.cache-llama.outputs.cache-hit != 'true'
+        run: |
+          cmake -S third_party/llama.cpp -B third_party/llama.cpp/build \
+            -DCMAKE_BUILD_TYPE=Release -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF
+          cmake --build third_party/llama.cpp/build --config Release -j$(sysctl -n hw.logicalcpu)
+
+      - name: Build bridge
+        run: |
+          cmake -S bridge -B bridge/build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLLAMA_CPP_DIR=${{ github.workspace }}/third_party/llama.cpp
+          cmake --build bridge/build --config Release -j$(sysctl -n hw.logicalcpu)
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bridge-darwin-arm64
+          path: bridge/build/libllama_bridge.dylib
+          retention-days: 1
+
+  build-bridge-windows-x86_64:
+    name: Build bridge (Windows x86_64)
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache llama.cpp
+        uses: actions/cache@v4
+        id: cache-llama
+        with:
+          path: third_party/llama.cpp
+          key: llama-cpp-windows-x86_64-${{ hashFiles('third_party/llama.cpp/README.md') }}
+
+      - name: Clone llama.cpp
+        if: steps.cache-llama.outputs.cache-hit != 'true'
+        run: git clone --depth 1 https://github.com/ggml-org/llama.cpp third_party/llama.cpp
+
+      - name: Build llama.cpp
+        if: steps.cache-llama.outputs.cache-hit != 'true'
+        run: |
+          cmake -S third_party/llama.cpp -B third_party/llama.cpp/build `
+            -DCMAKE_BUILD_TYPE=Release -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF
+          cmake --build third_party/llama.cpp/build --config Release
+
+      - name: Build bridge
+        run: |
+          cmake -S bridge -B bridge/build `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DLLAMA_CPP_DIR="${{ github.workspace }}/third_party/llama.cpp"
+          cmake --build bridge/build --config Release
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bridge-windows-x86_64
+          path: bridge/build/Release/llama_bridge.dll
+          retention-days: 1
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Job 4: Publish Go module (embed prebuilt natives + tag)
+# ═══════════════════════════════════════════════════════════════════════════════
+  publish-go:
+    name: Publish Go module
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/go/') || startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write  # needed to commit prebuilt natives and push the tag
+    needs:
+      - build-bridge-linux-x86_64
+      - build-bridge-darwin-x86_64
+      - build-bridge-darwin-arm64
+      - build-bridge-windows-x86_64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Download all native artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/bridge-artifacts
+
+      - name: Place prebuilt natives into Go module
+        run: |
+          mkdir -p bindings/go/llama/prebuilt/linux_amd64
+          mkdir -p bindings/go/llama/prebuilt/darwin_amd64
+          mkdir -p bindings/go/llama/prebuilt/darwin_arm64
+          mkdir -p bindings/go/llama/prebuilt/windows_amd64
+          cp /tmp/bridge-artifacts/bridge-linux-x86_64/libllama_bridge.so  bindings/go/llama/prebuilt/linux_amd64/
+          cp /tmp/bridge-artifacts/bridge-darwin-x86_64/libllama_bridge.dylib bindings/go/llama/prebuilt/darwin_amd64/
+          cp /tmp/bridge-artifacts/bridge-darwin-arm64/libllama_bridge.dylib  bindings/go/llama/prebuilt/darwin_arm64/
+          cp /tmp/bridge-artifacts/bridge-windows-x86_64/llama_bridge.dll     bindings/go/llama/prebuilt/windows_amd64/
+
+      - name: Verify module builds
+        working-directory: bindings/go
+        run: go build ./...
+
+      - name: Commit prebuilt natives and push to main
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add bindings/go/llama/prebuilt/
+          git commit -m "chore: bundle prebuilt natives for ${GITHUB_REF_NAME}" || echo "Nothing to commit"
+          # Push the commit to main so the prebuilt natives are tracked on the
+          # default branch.  The tag already points at the correct semantic
+          # version and is NOT rewritten — tags are immutable once pushed.
+          git push origin HEAD:main --force-with-lease
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Job 5: Publish Java fat JAR to Maven Central
+# ═══════════════════════════════════════════════════════════════════════════════
+  publish-java:
+    name: Publish Java artifact
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/java/') || startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: read
+    needs:
+      - build-bridge-linux-x86_64
+      - build-bridge-darwin-x86_64
+      - build-bridge-darwin-arm64
+      - build-bridge-windows-x86_64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '22'
+          cache: maven
+          server-id: ossrh
+          server-username: MAVEN_USERNAME
+          server-password: MAVEN_PASSWORD
+          gpg-private-key: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
+          gpg-passphrase: MAVEN_GPG_PASSPHRASE
+
+      - name: Download all native artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/bridge-artifacts
+
+      - name: Place prebuilt natives into Java resources
+        run: |
+          mkdir -p bindings/java/src/main/resources/native/linux-x86_64
+          mkdir -p bindings/java/src/main/resources/native/darwin-x86_64
+          mkdir -p bindings/java/src/main/resources/native/darwin-aarch64
+          mkdir -p bindings/java/src/main/resources/native/windows-x86_64
+          cp /tmp/bridge-artifacts/bridge-linux-x86_64/libllama_bridge.so     bindings/java/src/main/resources/native/linux-x86_64/
+          cp /tmp/bridge-artifacts/bridge-darwin-x86_64/libllama_bridge.dylib bindings/java/src/main/resources/native/darwin-x86_64/
+          cp /tmp/bridge-artifacts/bridge-darwin-arm64/libllama_bridge.dylib  bindings/java/src/main/resources/native/darwin-aarch64/
+          cp /tmp/bridge-artifacts/bridge-windows-x86_64/llama_bridge.dll     bindings/java/src/main/resources/native/windows-x86_64/
+
+      - name: Deploy to Maven Central
+        working-directory: bindings/java
+        env:
+          MAVEN_USERNAME: ${{ secrets.OSSRH_USERNAME }}
+          MAVEN_PASSWORD: ${{ secrets.OSSRH_PASSWORD }}
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
+        run: |
+          mvn -B deploy -DskipTests \
+            -Dbridge.lib.dir=/tmp/bridge-artifacts/bridge-linux-x86_64
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Job 6: Publish npm package
+# ═══════════════════════════════════════════════════════════════════════════════
+  publish-npm:
+    name: Publish npm package
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/js/') || startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install Emscripten
+        run: |
+          git clone --depth 1 https://github.com/emscripten-core/emsdk.git /tmp/emsdk
+          /tmp/emsdk/emsdk install latest
+          /tmp/emsdk/emsdk activate latest
+          echo "EMSDK=/tmp/emsdk" >> $GITHUB_ENV
+          echo "/tmp/emsdk" >> $GITHUB_PATH
+          echo "/tmp/emsdk/upstream/emscripten" >> $GITHUB_PATH
+
+      - name: Install CMake
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build
+
+      - name: Cache llama.cpp
+        uses: actions/cache@v4
+        id: cache-llama
+        with:
+          path: third_party/llama.cpp
+          key: llama-cpp-linux-x86_64-${{ hashFiles('third_party/llama.cpp/README.md') }}
+
+      - name: Clone llama.cpp
+        if: steps.cache-llama.outputs.cache-hit != 'true'
+        run: git clone --depth 1 https://github.com/ggml-org/llama.cpp third_party/llama.cpp
+
+      - name: Build WASM
+        run: |
+          source /tmp/emsdk/emsdk_env.sh
+          emcmake cmake -S bridge -B wasm/build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLLAMA_CPP_DIR=${{ github.workspace }}/third_party/llama.cpp \
+            -DTARGET_WASM=ON
+          cmake --build wasm/build --config Release -j$(nproc)
+          cp wasm/build/llama_bridge.js  bindings/js-browser/dist/
+          cp wasm/build/llama_bridge.wasm bindings/js-browser/dist/
+
+      - name: Build & test JS package
+        working-directory: bindings/js-browser
+        run: |
+          npm ci
+          npm test
+          npm run build
+
+      - name: Publish to npm
+        working-directory: bindings/js-browser
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public

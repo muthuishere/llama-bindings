@@ -15,8 +15,8 @@
   <url>https://github.com/muthuishere/llama-bindings</url>
 
   <properties>
-    <maven.compiler.source>21</maven.compiler.source>
-    <maven.compiler.target>21</maven.compiler.target>
+    <maven.compiler.source>22</maven.compiler.source>
+    <maven.compiler.target>22</maven.compiler.target>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <!-- Native library build output dir (set by Taskfile before maven runs). -->
     <bridge.lib.dir>${project.basedir}/../../bridge/build</bridge.lib.dir>
@@ -41,6 +41,18 @@
 
   <build>
     <plugins>
+      <!-- Compiler: enable Project Panama FFM APIs (GA in JDK 22+). -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>3.13.0</version>
+        <configuration>
+          <source>22</source>
+          <target>22</target>
+          <release>22</release>
+        </configuration>
+      </plugin>
+
       <!-- Surefire: run JUnit 5 tests and enable Panama FFM preview flags. -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>

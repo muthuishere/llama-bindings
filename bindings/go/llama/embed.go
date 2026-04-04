@@ -1,130 +1,138 @@
 package llama
 
-/*
-#cgo CFLAGS: -I${SRCDIR}/../../../bridge/include
-#cgo LDFLAGS: -L${SRCDIR}/../../../bridge/build -lllama_bridge
-
-#include "llama_bridge.h"
-#include <stdlib.h>
-
-extern void goEmbedEventCallback(const char* event_json, void* user_data);
-*/
-import "C"
 import (
-	"encoding/json"
-	"sync"
-	"unsafe"
-)
+"encoding/json"
+"runtime"
+"sync"
+"sync/atomic"
+"unsafe"
 
-var (
-	embedCallbackMu sync.Mutex
-	embedCallbacks  = make(map[uintptr]EventCallback)
+"github.com/ebitengine/purego"
 )
-
-//export goEmbedEventCallback
-func goEmbedEventCallback(eventJSON *C.char, userData unsafe.Pointer) {
-	key := uintptr(userData)
-	embedCallbackMu.Lock()
-	cb, ok := embedCallbacks[key]
-	embedCallbackMu.Unlock()
-	if !ok || cb == nil {
-		return
-	}
-	var evt Event
-	if err := json.Unmarshal([]byte(C.GoString(eventJSON)), &evt); err == nil {
-		cb(evt)
-	}
-}
 
 // EmbedEngine provides text-embedding inference backed by a loaded GGUF model.
 // Create with NewEmbed; always call Close when done.
 type EmbedEngine struct {
-	mu      sync.Mutex
-	handle  C.llama_embed_engine_t
-	onEvent EventCallback
-	closed  bool
+mu      sync.Mutex
+handle  uintptr
+cbKey   uintptr // stable registry key for this engine's callback
+onEvent EventCallback
+closed  bool
 }
+
+// embedNextKey is an atomic counter used to generate stable, unique callback keys.
+var embedNextKey uint64
+
+var (
+embedCallbackMu sync.RWMutex
+embedCallbacks  = make(map[uintptr]EventCallback)
+)
+
+// embedEventCallback is a C-callable function pointer created by purego.NewCallback.
+// userData is the stable cbKey assigned before calling llama_embed_create.
+var embedEventCallback = purego.NewCallback(func(eventJSONPtr unsafe.Pointer, userData uintptr) {
+embedCallbackMu.RLock()
+cb, ok := embedCallbacks[userData]
+embedCallbackMu.RUnlock()
+if !ok || cb == nil {
+return
+}
+jsonStr := readCString(eventJSONPtr)
+var evt Event
+if err := json.Unmarshal([]byte(jsonStr), &evt); err == nil {
+cb(evt)
+}
+})
 
 // NewEmbed creates an EmbedEngine loaded from modelPath.
 func NewEmbed(modelPath string, opts LoadOptions) (*EmbedEngine, error) {
-	cPath := C.CString(modelPath)
-	defer C.free(unsafe.Pointer(cPath))
+if err := checkBridge(); err != nil {
+return nil, err
+}
 
-	dummy := new(C.char)
-	key := uintptr(unsafe.Pointer(dummy))
+// Register callback BEFORE calling llama_embed_create so that load-time
+// events (e.g. open_model_file) are captured.
+var cbKey uintptr
+var cbPtr uintptr
+if opts.OnEvent != nil {
+cbKey = uintptr(atomic.AddUint64(&embedNextKey, 1))
+embedCallbackMu.Lock()
+embedCallbacks[cbKey] = opts.OnEvent
+embedCallbackMu.Unlock()
+cbPtr = embedEventCallback
+}
 
-	embedCallbackMu.Lock()
-	if opts.OnEvent != nil {
-		embedCallbacks[key] = opts.OnEvent
-	}
-	embedCallbackMu.Unlock()
+pathBuf := cStringBytes(modelPath)
+handle := llamaEmbedCreate(bufPtr(pathBuf), cbPtr, cbKey)
+runtime.KeepAlive(pathBuf)
 
-	var cb C.llama_event_cb
-	if opts.OnEvent != nil {
-		cb = C.llama_event_cb(C.goEmbedEventCallback)
-	}
+if handle == 0 {
+if cbKey != 0 {
+embedCallbackMu.Lock()
+delete(embedCallbacks, cbKey)
+embedCallbackMu.Unlock()
+}
+return nil, &LlamaError{Code: ErrCodeModelLoadFailed, Message: "llama_embed_create returned NULL"}
+}
 
-	handle := C.llama_embed_create(cPath, cb, unsafe.Pointer(dummy))
-	if handle == nil {
-		embedCallbackMu.Lock()
-		delete(embedCallbacks, key)
-		embedCallbackMu.Unlock()
-		return nil, &LlamaError{Code: ErrCodeModelLoadFailed, Message: "llama_embed_create returned NULL"}
-	}
-
-	return &EmbedEngine{
-		handle:  handle,
-		onEvent: opts.OnEvent,
-	}, nil
+return &EmbedEngine{
+handle:  handle,
+cbKey:   cbKey,
+onEvent: opts.OnEvent,
+}, nil
 }
 
 // Embed generates an embedding vector for the given text.
 // Returns a float32 slice whose length equals the model's embedding dimension.
 func (e *EmbedEngine) Embed(text string, opts EmbedOptions) ([]float32, error) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
+e.mu.Lock()
+defer e.mu.Unlock()
 
-	if e.closed {
-		return nil, &LlamaError{Code: ErrCodeEngineClosed, Message: "engine is closed"}
-	}
-	if text == "" {
-		return nil, &LlamaError{Code: ErrCodeInvalidRequest, Message: "input text must not be empty"}
-	}
+if e.closed {
+return nil, &LlamaError{Code: ErrCodeEngineClosed, Message: "engine is closed"}
+}
+if text == "" {
+return nil, &LlamaError{Code: ErrCodeInvalidRequest, Message: "input text must not be empty"}
+}
 
-	cText := C.CString(text)
-	defer C.free(unsafe.Pointer(cText))
+textBuf := cStringBytes(text)
 
-	var outLen C.int
-	cVec := C.llama_embed_infer(e.handle, cText, &outLen)
-	if cVec == nil {
-		return nil, &LlamaError{Code: ErrCodeInferenceFailed, Message: "bridge returned NULL vector"}
-	}
-	defer C.llama_bridge_float_free(cVec)
+var outLen int32
+vecPtr := llamaEmbedInfer(e.handle, bufPtr(textBuf), unsafe.Pointer(&outLen))
+runtime.KeepAlive(textBuf)
 
-	n := int(outLen)
-	if n <= 0 {
-		return nil, &LlamaError{Code: ErrCodeInferenceFailed, Message: "bridge returned empty vector"}
-	}
+if vecPtr == nil {
+return nil, &LlamaError{Code: ErrCodeInferenceFailed, Message: "bridge returned NULL vector"}
+}
 
-	// Copy the C float array into a Go slice.
-	result := make([]float32, n)
-	cSlice := (*[1 << 28]C.float)(unsafe.Pointer(cVec))[:n:n]
-	for i := 0; i < n; i++ {
-		result[i] = float32(cSlice[i])
-	}
+n := int(outLen)
+if n <= 0 {
+llamaFloatFree(vecPtr)
+return nil, &LlamaError{Code: ErrCodeInferenceFailed, Message: "bridge returned empty vector"}
+}
 
-	return result, nil
+result := readFloats(vecPtr, n)
+llamaFloatFree(vecPtr)
+
+return result, nil
 }
 
 // Close releases the native engine and all associated resources.
 func (e *EmbedEngine) Close() {
-	e.mu.Lock()
-	defer e.mu.Unlock()
+e.mu.Lock()
+defer e.mu.Unlock()
 
-	if e.closed {
-		return
-	}
-	e.closed = true
-	C.llama_embed_destroy(e.handle)
-	e.handle = nil
+if e.closed {
+return
+}
+e.closed = true
+
+if e.cbKey != 0 {
+embedCallbackMu.Lock()
+delete(embedCallbacks, e.cbKey)
+embedCallbackMu.Unlock()
+}
+
+llamaEmbedDestroy(e.handle)
+e.handle = 0
 }

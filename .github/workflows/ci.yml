@@ -1,0 +1,114 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Build native bridge + run unit tests (Go, Java, JS)
+  # ---------------------------------------------------------------------------
+  test:
+    name: Unit tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── Tools ──────────────────────────────────────────────────────────────
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+          cache-dependency-path: bindings/go/go.sum
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '22'
+          cache: maven
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: bindings/js-browser/package-lock.json
+
+      - name: Install CMake (Ubuntu)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build
+
+      - name: Install CMake (macOS)
+        if: runner.os == 'macOS'
+        run: brew install cmake ninja
+
+      # ── llama.cpp ──────────────────────────────────────────────────────────
+      - name: Cache llama.cpp build
+        uses: actions/cache@v4
+        id: cache-llama
+        with:
+          path: third_party/llama.cpp
+          key: llama-cpp-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('third_party/llama.cpp/README.md') }}
+
+      - name: Clone llama.cpp
+        if: steps.cache-llama.outputs.cache-hit != 'true'
+        run: git clone --depth 1 https://github.com/ggml-org/llama.cpp third_party/llama.cpp
+
+      - name: Build llama.cpp
+        if: steps.cache-llama.outputs.cache-hit != 'true'
+        run: |
+          cmake -S third_party/llama.cpp \
+                -B third_party/llama.cpp/build \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DLLAMA_BUILD_TESTS=OFF \
+                -DLLAMA_BUILD_EXAMPLES=OFF
+          cmake --build third_party/llama.cpp/build --config Release -j$(nproc 2>/dev/null || sysctl -n hw.logicalcpu)
+
+      # ── Bridge ─────────────────────────────────────────────────────────────
+      - name: Configure bridge
+        run: |
+          cmake -S bridge \
+                -B bridge/build \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DLLAMA_CPP_DIR=${{ github.workspace }}/third_party/llama.cpp
+
+      - name: Build bridge
+        run: cmake --build bridge/build --config Release -j$(nproc 2>/dev/null || sysctl -n hw.logicalcpu)
+
+      # ── Go unit tests ──────────────────────────────────────────────────────
+      - name: Go unit tests
+        working-directory: bindings/go
+        env:
+          LD_LIBRARY_PATH: "${{ github.workspace }}/bridge/build"
+          DYLD_LIBRARY_PATH: "${{ github.workspace }}/bridge/build"
+        run: go test ./... -v -count=1
+
+      # ── Java unit tests ────────────────────────────────────────────────────
+      - name: Java unit tests
+        working-directory: bindings/java
+        run: |
+          mvn -B test \
+            -Dbridge.lib.dir=${{ github.workspace }}/bridge/build
+
+      # ── JS unit tests ──────────────────────────────────────────────────────
+      - name: JS unit tests
+        working-directory: bindings/js-browser
+        run: |
+          npm ci
+          npm test

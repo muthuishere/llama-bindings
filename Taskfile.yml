@@ -8,7 +8,7 @@
 #   - task (https://taskfile.dev)
 #   - git, cmake, make/ninja
 #   - Go >= 1.21
-#   - JDK 21 + Maven
+#   - JDK 22 + Maven
 #   - Node.js >= 18 + npm
 #   - Emscripten (for WASM target)
 
