@@ -2,7 +2,7 @@
 
 Go library for [llama.cpp](https://github.com/ggml-org/llama.cpp) chat and embedding inference.
 
-**Runtime:** Go → CGO → native bridge → llama.cpp
+**Runtime:** Go → purego → native bridge → llama.cpp
 
 ## Installation
 
@@ -14,7 +14,7 @@ go get github.com/muthuishere/llama-bindings/go/llama
 
 - Go ≥ 1.21
 - Native bridge built (`task build-bridge`)
-- `CGO_CFLAGS` and `CGO_LDFLAGS` pointing to the bridge (set by `task build-go`)
+- `task build-bridge` run first so `libllama_bridge` exists in `bridge/build/`
 
 ## Quick start
 

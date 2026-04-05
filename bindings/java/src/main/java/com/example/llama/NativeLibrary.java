@@ -230,7 +230,7 @@ final class NativeLibrary {
         MethodHandle target = MethodHandles.lookup().findVirtual(
                 EventListener.class,
                 "onEventJson",
-                MethodType.methodType(void.class, String.class, MemorySegment.class)
+                MethodType.methodType(void.class, MemorySegment.class, MemorySegment.class)
         ).bindTo(listener);
 
         return LINKER.upcallStub(target, EVENT_CB_DESCRIPTOR, arena);

@@ -1,7 +1,7 @@
 //go:build e2e
 
 // Package llama_test contains end-to-end tests that exercise the full
-// Go → CGO → native bridge → llama.cpp stack with a real GGUF model.
+// Go → purego → native bridge → llama.cpp stack with a real GGUF model.
 //
 // Prerequisites:
 //   - Native bridge built:  task build-bridge

@@ -25,6 +25,7 @@ tests/e2e/js-browser/test-results/
 # llama.cpp source tree (cloned by `task init`)
 third_party/llama.cpp/*
 !third_party/llama.cpp/README.md
+third_party/llama.cpp-src/
 
 # OS
 .DS_Store

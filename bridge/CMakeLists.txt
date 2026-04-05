@@ -9,7 +9,7 @@ project(llama_bridge C)
 set(CMAKE_C_STANDARD 11)
 
 # Path to the cloned llama.cpp repository (https://github.com/ggml-org/llama.cpp)
-set(LLAMA_CPP_DIR "${CMAKE_SOURCE_DIR}/../third_party/llama.cpp"
+set(LLAMA_CPP_DIR "${CMAKE_SOURCE_DIR}/../third_party/llama.cpp-src"
     CACHE PATH "Path to the llama.cpp source tree")
 
 # -----------------------------------------------------------------------
@@ -31,7 +31,7 @@ target_include_directories(llama_bridge
 )
 
 # -----------------------------------------------------------------------
-# Link llama.cpp once it is built (third_party/llama.cpp/build)
+# Link llama.cpp once it is built (third_party/llama.cpp-src/build)
 #
 # Use whole-archive / force_load so that every symbol from the static
 # libs is pulled into the shared library, making it fully self-contained.

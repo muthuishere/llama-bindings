@@ -2,7 +2,7 @@
 //
 // # Architecture
 //
-// Go → CGO → native bridge → llama.cpp
+// Go → purego → native bridge → llama.cpp
 //
 // Only the bridge layer knows about upstream llama.cpp internals.
 // This package exposes a stable, idiomatic Go API.

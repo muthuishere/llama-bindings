@@ -16,7 +16,7 @@ version: '3'
 
 vars:
   LLAMA_CPP_REPO:  https://github.com/ggml-org/llama.cpp
-  LLAMA_CPP_DIR:   "{{.ROOT_DIR}}/third_party/llama.cpp"
+  LLAMA_CPP_DIR:   "{{.ROOT_DIR}}/third_party/llama.cpp-src"
   BRIDGE_DIR:      "{{.ROOT_DIR}}/bridge"
   BRIDGE_BUILD:    "{{.ROOT_DIR}}/bridge/build"
   WASM_DIR:        "{{.ROOT_DIR}}/wasm"
@@ -43,7 +43,7 @@ tasks:
 # Init / Update
 # ---------------------------------------------------------------------------
   init:
-    desc: "Clone llama.cpp from https://github.com/ggml-org/llama.cpp and prepare workspace"
+    desc: "Clone llama.cpp into third_party/llama.cpp-src and prepare workspace"
     cmds:
       - |
         if [ ! -d "{{.LLAMA_CPP_DIR}}/.git" ]; then
@@ -222,8 +222,6 @@ tasks:
     dir: "{{.E2E_DIR}}/go"
     cmds:
       - |
-        CGO_CFLAGS="-I{{.ROOT_DIR}}/bridge/include" \
-        CGO_LDFLAGS="-L{{.BRIDGE_BUILD}} -lllama_bridge" \
         LLAMA_CHAT_MODEL={{.CHAT_MODEL}} \
         LLAMA_EMBED_MODEL={{.EMBED_MODEL}} \
         go test -tags e2e ./... -v -count=1

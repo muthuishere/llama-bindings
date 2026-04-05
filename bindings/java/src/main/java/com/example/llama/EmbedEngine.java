@@ -134,7 +134,7 @@ public final class EmbedEngine implements AutoCloseable {
         return java.lang.invoke.MethodHandles.lookup()
                 .findVirtual(EventListener.class, "onEventJson",
                         java.lang.invoke.MethodType.methodType(
-                                void.class, String.class, MemorySegment.class))
+                                void.class, MemorySegment.class, MemorySegment.class))
                 .bindTo(listener);
     }
 }

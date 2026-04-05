@@ -6,7 +6,7 @@ Cross-language library suite on top of [llama.cpp](https://github.com/ggml-org/l
 
 | Target | Runtime | Package |
 |--------|---------|---------|
-| Go | CGO → native bridge → llama.cpp | `github.com/muthuishere/llama-bindings/go` |
+| Go | purego → native bridge → llama.cpp | `github.com/muthuishere/llama-bindings/go` |
 | Java | Project Panama FFM → native bridge → llama.cpp | `com.example.llama:llama-java` |
 | Browser JS | WASM → llama.cpp | `@llama-bindings/js-browser` |
 
@@ -49,7 +49,8 @@ chat.close();
 ## Repository structure
 
 ```
-third_party/llama.cpp/    ← upstream: https://github.com/ggml-org/llama.cpp
+third_party/llama.cpp/    ← tracked placeholder for the upstream dependency
+third_party/llama.cpp-src/← local upstream checkout populated by `task init`
 bridge/                   ← native C bridge (shared by all targets)
 bindings/
   go/                     ← Go library

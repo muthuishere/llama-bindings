@@ -49,7 +49,7 @@ language bindings stay unchanged.**
 To pin to a specific llama.cpp commit or tag:
 
 ```sh
-cd third_party/llama.cpp
+cd third_party/llama.cpp-src
 git fetch origin
 git checkout <tag-or-sha>
 cd ../..

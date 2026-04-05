@@ -20,6 +20,8 @@
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <!-- Native library build output dir (set by Taskfile before maven runs). -->
     <bridge.lib.dir>${project.basedir}/../../bridge/build</bridge.lib.dir>
+    <surefire.groups></surefire.groups>
+    <surefire.excludedGroups>e2e</surefire.excludedGroups>
   </properties>
 
   <dependencies>
@@ -60,7 +62,8 @@
         <version>3.2.5</version>
         <configuration>
           <!-- Default: exclude e2e tests that need a real model + bridge. -->
-          <excludedGroups>e2e</excludedGroups>
+          <groups>${surefire.groups}</groups>
+          <excludedGroups>${surefire.excludedGroups}</excludedGroups>
           <argLine>
             --enable-native-access=ALL-UNNAMED
             -Djava.library.path=${bridge.lib.dir}
@@ -115,6 +118,10 @@
     -->
     <profile>
       <id>e2e</id>
+      <properties>
+        <surefire.groups>e2e</surefire.groups>
+        <surefire.excludedGroups></surefire.excludedGroups>
+      </properties>
       <build>
         <plugins>
           <plugin>
@@ -122,9 +129,6 @@
             <artifactId>maven-surefire-plugin</artifactId>
             <version>3.2.5</version>
             <configuration>
-              <!-- Run only e2e-tagged tests in this profile. -->
-              <groups>e2e</groups>
-              <excludedGroups/>
               <argLine>
                 --enable-native-access=ALL-UNNAMED
                 -Djava.library.path=${bridge.lib.dir}

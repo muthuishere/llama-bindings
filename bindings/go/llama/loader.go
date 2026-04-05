@@ -1,10 +1,11 @@
 package llama
 
 import (
-"fmt"
-"os"
-"sync"
-"unsafe"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sync"
+	"unsafe"
 
 "github.com/ebitengine/purego"
 )
@@ -68,31 +69,86 @@ return nil
 
 // loadBridgeLibrary tries the following sources in order:
 //  1. Embedded prebuilt binary (bundled at compile time via go:embed).
-//  2. System library path (for developer builds where task build-bridge was run).
+//  2. Explicit / repo-local developer build paths.
+//  3. System library path (for developer builds where the loader search path
+//     already includes libllama_bridge).
 func loadBridgeLibrary() (uintptr, error) {
-// 1. Try embedded prebuilt
-data := embeddedNativeLib()
-if len(data) > 0 {
-tmpPath, cleanup, err := extractLibToTemp(data, nativeLibName())
-if err == nil {
-lib, err := openLibrary(tmpPath)
-if err == nil {
-_ = cleanup // temp file persists until process exit; OS cleans up
-return lib, nil
-}
-cleanup()
-}
+	// 1. Try embedded prebuilt
+	data := embeddedNativeLib()
+	if len(data) > 0 {
+		tmpPath, cleanup, err := extractLibToTemp(data, nativeLibName())
+		if err == nil {
+			lib, err := openLibrary(tmpPath)
+			if err == nil {
+				_ = cleanup // temp file persists until process exit; OS cleans up
+				return lib, nil
+			}
+			cleanup()
+		}
+	}
+
+	// 2. Try explicit / repo-local developer build locations.
+	for _, path := range developerLibraryCandidates() {
+		lib, err := openLibrary(path)
+		if err == nil {
+			return lib, nil
+		}
+	}
+
+	// 3. Try well-known system library names.
+	for _, name := range systemLibraryCandidates() {
+		lib, err := openLibrary(name)
+		if err == nil {
+			return lib, nil
+		}
+	}
+
+	return 0, fmt.Errorf("libllama_bridge not found — run `task build-bridge`, set LLAMA_BRIDGE_PATH, or use a published release that bundles prebuilt natives")
 }
 
-// 2. Try well-known system library names
-for _, name := range systemLibraryCandidates() {
-lib, err := openLibrary(name)
-if err == nil {
-return lib, nil
-}
-}
+func developerLibraryCandidates() []string {
+	libName := nativeLibName()
+	var candidates []string
 
-return 0, fmt.Errorf("libllama_bridge not found — run `task build-bridge` or use a published release that bundles prebuilt natives")
+	if p := os.Getenv("LLAMA_BRIDGE_PATH"); p != "" {
+		candidates = append(candidates, p)
+	}
+
+	addBridgeBuildPaths := func(base string) {
+		if base == "" {
+			return
+		}
+		base = filepath.Clean(base)
+		candidates = append(candidates, filepath.Join(base, libName))
+		for dir := base; ; dir = filepath.Dir(dir) {
+			candidates = append(candidates, filepath.Join(dir, "bridge", "build", libName))
+			parent := filepath.Dir(dir)
+			if parent == dir {
+				break
+			}
+		}
+	}
+
+	if cwd, err := os.Getwd(); err == nil {
+		addBridgeBuildPaths(cwd)
+	}
+	if exe, err := os.Executable(); err == nil {
+		addBridgeBuildPaths(filepath.Dir(exe))
+	}
+
+	seen := make(map[string]struct{}, len(candidates))
+	deduped := make([]string, 0, len(candidates))
+	for _, path := range candidates {
+		if path == "" {
+			continue
+		}
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		deduped = append(deduped, path)
+	}
+	return deduped
 }
 
 // extractLibToTemp writes data to a uniquely named temporary file that already

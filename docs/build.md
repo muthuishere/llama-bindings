@@ -19,7 +19,7 @@
 
 The upstream repository is **https://github.com/ggml-org/llama.cpp**.
 
-It is cloned into `third_party/llama.cpp/` by `task init` and is **not**
+It is cloned into `third_party/llama.cpp-src/` by `task init` and is **not**
 committed to this repository.
 
 ## Step-by-step
@@ -54,19 +54,18 @@ task build
 ### Bridge
 
 The bridge is a shared C library (`libllama_bridge`). CMake configuration
-lives in `bridge/CMakeLists.txt`. The build requires `third_party/llama.cpp`
+lives in `bridge/CMakeLists.txt`. The build requires `third_party/llama.cpp-src`
 to be built first (`task build-llama`).
 
 ### Go
 
 ```sh
 cd bindings/go
-CGO_CFLAGS="-I../../bridge/include" \
-CGO_LDFLAGS="-L../../bridge/build -lllama_bridge" \
 go build ./...
 ```
 
-`task build-go` sets these flags automatically.
+The Go binding uses `purego`, not CGO. For local developer builds, run
+`task build-bridge` first so `libllama_bridge` exists in `bridge/build/`.
 
 ### Java
 
