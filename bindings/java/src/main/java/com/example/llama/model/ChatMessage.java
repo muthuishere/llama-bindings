@@ -23,4 +23,10 @@ public final class ChatMessage {
     public static ChatMessage system(String content)    { return new ChatMessage("system", content); }
     public static ChatMessage user(String content)      { return new ChatMessage("user", content); }
     public static ChatMessage assistant(String content) { return new ChatMessage("assistant", content); }
+
+    public static ChatMessage tool(String toolName, String content) {
+        ChatMessage msg = new ChatMessage("tool", content);
+        msg.toolName = toolName;
+        return msg;
+    }
 }
