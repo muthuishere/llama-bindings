@@ -1,14 +1,18 @@
 package com.example.llama.e2e;
 
 import com.example.llama.*;
+import com.example.llama.agent.Agent;
 import com.example.llama.model.*;
+import com.example.llama.tools.ToolRegistry;
 import org.junit.jupiter.api.*;
 
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
@@ -42,15 +46,17 @@ class E2ETest {
     private static String chatModelPath() {
         String env = System.getenv("LLAMA_CHAT_MODEL");
         if (env != null && !env.isBlank()) return env;
-        // Resolve relative to project root (3 levels up from bindings/java/src/test)
-        Path root = Paths.get(System.getProperty("user.dir")).getParent().getParent();
-        return root.resolve("tests/models/qwen2.5-0.5b-instruct-q4_k_m.gguf").toString();
+        return Paths.get(System.getProperty("user.home"),
+                "llama-bindings-conf", "models", "chat",
+                "gemma-4-E2B-it-Q4_K_M.gguf").toString();
     }
 
     private static String embedModelPath() {
         String env = System.getenv("LLAMA_EMBED_MODEL");
         if (env != null && !env.isBlank()) return env;
-        return chatModelPath(); // reuse Qwen model for embedding
+        return Paths.get(System.getProperty("user.home"),
+                "llama-bindings-conf", "models", "embeddings",
+                "nomic-embed-text-v1.5.Q4_K_M.gguf").toString();
     }
 
     private static void skipIfModelAbsent(String path) {
@@ -214,5 +220,110 @@ class E2ETest {
                 }
             }
         }
+    }
+
+    // ----------------------------------------------------------------
+    // Agent — helpers
+    // ----------------------------------------------------------------
+
+    private Agent createAgentOrSkip() throws Exception {
+        String chat  = chatModelPath();
+        String embed = embedModelPath();
+        skipIfModelAbsent(chat);
+        skipIfModelAbsent(embed);
+        return Agent.create(chat, embed, ":memory:");
+    }
+
+    // ----------------------------------------------------------------
+    // Agent — basic chat
+    // ----------------------------------------------------------------
+
+    @Test
+    void e2eAgentChatReturnsText() throws Exception {
+        try (Agent a = createAgentOrSkip()) {
+            String reply = a.chat("session-1", "Say hello in exactly one word.");
+            assertNotNull(reply, "Expected non-null reply");
+            assertFalse(reply.isBlank(), "Expected non-blank reply");
+            System.out.println("Agent reply: " + reply);
+        }
+    }
+
+    // ----------------------------------------------------------------
+    // Agent — multi-turn history
+    // ----------------------------------------------------------------
+
+    @Test
+    void e2eAgentMultiTurnHistory() throws Exception {
+        try (Agent a = createAgentOrSkip()) {
+            a.chat("history-session", "My name is Muthukumaran.");
+            String reply = a.chat("history-session", "What is my name?");
+            assertFalse(reply.isBlank(), "Expected non-blank reply on second turn");
+            System.out.println("Second turn reply: " + reply);
+        }
+    }
+
+    // ----------------------------------------------------------------
+    // Agent — knowledge (addDocument → query)
+    // ----------------------------------------------------------------
+
+    @Test
+    void e2eAgentWithDocument() throws Exception {
+        try (Agent a = createAgentOrSkip()) {
+            a.addDocument("The capital of France is Paris.");
+            String reply = a.chat("doc-session", "What is the capital of France?");
+            assertFalse(reply.isBlank(), "Expected non-blank reply");
+            System.out.println("Knowledge-grounded reply: " + reply);
+        }
+    }
+
+    // ----------------------------------------------------------------
+    // Agent — tool dispatch
+    // ----------------------------------------------------------------
+
+    @Test
+    void e2eAgentWithTool() throws Exception {
+        try (Agent a = createAgentOrSkip()) {
+            var called = new AtomicBoolean(false);
+            a.addTool(
+                new ToolDefinition(
+                    "lookup_weather",
+                    "Get current weather for a city",
+                    Map.of(
+                        "type", "object",
+                        "properties", Map.of("city", Map.of("type", "string")),
+                        "required", List.of("city"),
+                        "additionalProperties", false
+                    )
+                ),
+                args -> {
+                    called.set(true);
+                    return Map.of("temperature", "32°C", "condition", "sunny");
+                }
+            );
+
+            try {
+                String reply = a.chat("tool-session", "What is the weather in Chennai?");
+                assertFalse(reply.isBlank(), "Expected non-blank reply");
+                System.out.printf("Tool-grounded reply (tool called=%b): %s%n", called.get(), reply);
+            } catch (LlamaException e) {
+                // Bridge stub always returns tool_call → agent hits iteration limit.
+                // Tolerated until llama.cpp inference is wired into the bridge.
+                if (e.getMessage() != null && e.getMessage().contains("exceeded")) {
+                    System.out.println("Tool loop limit hit (bridge stub behaviour — expected): " + e.getMessage());
+                } else {
+                    throw e;
+                }
+            }
+        }
+    }
+
+    // ----------------------------------------------------------------
+    // Agent — export → import round-trip
+    // ----------------------------------------------------------------
+
+    @Test
+    void e2eAgentExportImport() {
+        // Export/ImportFrom not yet implemented — tracked in docs/export-import.md
+        assumeTrue(false, "Export/ImportFrom not yet implemented");
     }
 }

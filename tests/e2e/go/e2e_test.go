@@ -5,7 +5,7 @@
 //
 // Prerequisites:
 //   - Native bridge built:  task build-bridge
-//   - Model downloaded:     task download-model
+//   - Models downloaded:    task download-model
 //
 // Run:
 //
@@ -13,17 +13,17 @@
 //	# or via Taskfile:
 //	task e2e-go
 //
-// Model path defaults to tests/models/qwen2.5-0.5b-instruct-q4_k_m.gguf
+// Model paths default to ~/llama-bindings-conf/models/.
 // Override with LLAMA_CHAT_MODEL and LLAMA_EMBED_MODEL env vars.
 package e2e_test
 
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/muthuishere/llama-bindings/go/agent"
 	"github.com/muthuishere/llama-bindings/go/llama"
 )
 
@@ -36,9 +36,8 @@ func chatModelPath(t *testing.T) string {
 	if p := os.Getenv("LLAMA_CHAT_MODEL"); p != "" {
 		return p
 	}
-	_, file, _, _ := runtime.Caller(0)
-	root := filepath.Join(filepath.Dir(file), "..", "..", "..")
-	return filepath.Join(root, "tests", "models", "qwen2.5-0.5b-instruct-q4_k_m.gguf")
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, "llama-bindings-conf", "models", "chat", "gemma-4-E2B-it-Q4_K_M.gguf")
 }
 
 func embedModelPath(t *testing.T) string {
@@ -46,8 +45,8 @@ func embedModelPath(t *testing.T) string {
 	if p := os.Getenv("LLAMA_EMBED_MODEL"); p != "" {
 		return p
 	}
-	// Reuse the chat model for embedding in tests (Qwen2.5 supports both).
-	return chatModelPath(t)
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, "llama-bindings-conf", "models", "embeddings", "nomic-embed-text-v1.5.Q4_K_M.gguf")
 }
 
 func newChatOrSkip(t *testing.T, opts llama.LoadOptions) *llama.ChatEngine {
@@ -252,4 +251,126 @@ func TestE2EEmbedRepeatedCallsConsistent(t *testing.T) {
 				firstLen, i, len(vec))
 		}
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Agent — helpers
+// ---------------------------------------------------------------------------
+
+func newAgentOrSkip(t *testing.T) *agent.Agent {
+	t.Helper()
+	a, err := agent.New(chatModelPath(t), embedModelPath(t), ":memory:")
+	if err != nil {
+		t.Skipf("agent not available (build bridge + download models): %v", err)
+	}
+	t.Cleanup(a.Close)
+	return a
+}
+
+// ---------------------------------------------------------------------------
+// Agent — basic chat
+// ---------------------------------------------------------------------------
+
+func TestE2EAgentChatReturnsText(t *testing.T) {
+	a := newAgentOrSkip(t)
+
+	reply, err := a.Chat("session-1", "Say hello in exactly one word.")
+	if err != nil {
+		t.Fatalf("agent chat error: %v", err)
+	}
+	if strings.TrimSpace(reply) == "" {
+		t.Fatal("expected non-empty reply")
+	}
+	t.Logf("Agent reply: %s", reply)
+}
+
+// ---------------------------------------------------------------------------
+// Agent — multi-turn history
+// ---------------------------------------------------------------------------
+
+func TestE2EAgentMultiTurnHistory(t *testing.T) {
+	a := newAgentOrSkip(t)
+
+	_, err := a.Chat("history-session", "My name is Muthukumaran.")
+	if err != nil {
+		t.Fatalf("first turn error: %v", err)
+	}
+	reply, err := a.Chat("history-session", "What is my name?")
+	if err != nil {
+		t.Fatalf("second turn error: %v", err)
+	}
+	if strings.TrimSpace(reply) == "" {
+		t.Fatal("expected non-empty reply on second turn")
+	}
+	t.Logf("Second turn reply: %s", reply)
+}
+
+// ---------------------------------------------------------------------------
+// Agent — knowledge (addDocument → query)
+// ---------------------------------------------------------------------------
+
+func TestE2EAgentWithDocument(t *testing.T) {
+	a := newAgentOrSkip(t)
+
+	if err := a.AddDocument("The capital of France is Paris."); err != nil {
+		t.Fatalf("AddDocument error: %v", err)
+	}
+
+	reply, err := a.Chat("doc-session", "What is the capital of France?")
+	if err != nil {
+		t.Fatalf("agent chat error: %v", err)
+	}
+	if strings.TrimSpace(reply) == "" {
+		t.Fatal("expected non-empty reply")
+	}
+	t.Logf("Knowledge-grounded reply: %s", reply)
+}
+
+// ---------------------------------------------------------------------------
+// Agent — tool dispatch
+// ---------------------------------------------------------------------------
+
+func TestE2EAgentWithTool(t *testing.T) {
+	a := newAgentOrSkip(t)
+
+	called := false
+	err := a.AddTool(llama.ToolDefinition{
+		Name:        "lookup_weather",
+		Description: "Get current weather for a city",
+		Parameters: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"city": map[string]interface{}{"type": "string"},
+			},
+			"required":             []string{"city"},
+			"additionalProperties": false,
+		},
+	}, func(args map[string]interface{}) (interface{}, error) {
+		called = true
+		return map[string]interface{}{"temperature": "32°C", "condition": "sunny"}, nil
+	})
+	if err != nil {
+		t.Fatalf("AddTool error: %v", err)
+	}
+
+	reply, err := a.Chat("tool-session", "What is the weather in Chennai?")
+	// NOTE: the bridge stub always returns tool_call which causes the agent
+	// to loop. Until llama.cpp inference is wired into the bridge, we accept
+	// either a valid reply or the known loop-limit error.
+	if err != nil {
+		if strings.Contains(err.Error(), "exceeded") {
+			t.Logf("Tool loop limit hit (bridge stub behaviour — expected): %v", err)
+			return
+		}
+		t.Fatalf("agent chat error: %v", err)
+	}
+	t.Logf("Tool-grounded reply (tool called=%v): %s", called, reply)
+}
+
+// ---------------------------------------------------------------------------
+// Agent — export → import round-trip
+// ---------------------------------------------------------------------------
+
+func TestE2EAgentExportImport(t *testing.T) {
+	t.Skip("Export/ImportFrom not yet implemented — tracked in docs/export-import.md")
 }

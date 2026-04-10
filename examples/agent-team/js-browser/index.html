@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<!--
+  examples/agent-team/js-browser/index.html
+
+  Knowledge Assistant — Browser JS example for llama-bindings agent layer.
+
+  Demonstrates:
+    - Creating an Agent (chat + embed + knowledge + tools)
+    - Adding domain knowledge via addDocument
+    - Registering a callable tool (calculator)
+    - Multi-turn conversation with session history
+
+  Prerequisites:
+    task build-bridge && task build-wasm   (builds WASM — for real inference)
+    task download-model                    (fetches models)
+
+  Without the WASM build the stub module runs — full API surface still exercised.
+
+  Serve from repo root so /bindings/js-browser/src/ resolves:
+    npx serve -l 3000 .
+  Then open: http://localhost:3000/examples/agent-team/js-browser/
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>llama-bindings · Agent Team Example</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, sans-serif; background: #0f1117; color: #e2e8f0; min-height: 100vh; display: flex; flex-direction: column; }
+    header { background: #1a1d27; border-bottom: 1px solid #2d3148; padding: 1rem 1.5rem; display: flex; align-items: center; gap: 0.75rem; }
+    header h1 { font-size: 1.1rem; font-weight: 600; color: #a78bfa; }
+    header span { font-size: 0.8rem; color: #64748b; }
+    #status { padding: 0.5rem 1.5rem; font-size: 0.8rem; background: #161922; border-bottom: 1px solid #2d3148; color: #94a3b8; }
+    #status.ready   { color: #34d399; }
+    #status.error   { color: #f87171; }
+    #status.loading { color: #fbbf24; }
+    main { flex: 1; display: flex; flex-direction: column; max-width: 860px; width: 100%; margin: 0 auto; padding: 1rem 1.5rem; }
+    #chat { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 0.75rem; margin-bottom: 1rem; min-height: 300px; }
+    .msg { padding: 0.75rem 1rem; border-radius: 0.5rem; max-width: 85%; font-size: 0.9rem; line-height: 1.5; }
+    .msg.user  { background: #1e3a5f; align-self: flex-end; color: #bfdbfe; }
+    .msg.agent { background: #1a1d27; align-self: flex-start; border: 1px solid #2d3148; color: #e2e8f0; }
+    .msg.tool  { background: #1c2e1e; align-self: flex-start; border: 1px solid #166534; color: #86efac; font-family: monospace; font-size: 0.8rem; }
+    .msg.system { align-self: center; color: #64748b; font-size: 0.78rem; font-style: italic; }
+    #input-row { display: flex; gap: 0.5rem; }
+    #input { flex: 1; background: #1a1d27; border: 1px solid #2d3148; border-radius: 0.5rem; padding: 0.75rem 1rem; color: #e2e8f0; font-size: 0.9rem; outline: none; }
+    #input:focus { border-color: #7c3aed; }
+    #input:disabled { opacity: 0.5; }
+    button { background: #7c3aed; color: white; border: none; border-radius: 0.5rem; padding: 0.75rem 1.25rem; cursor: pointer; font-size: 0.9rem; font-weight: 500; transition: background 0.15s; }
+    button:hover:not(:disabled) { background: #6d28d9; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    #suggestions { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 0.75rem; }
+    .suggestion { background: #1a1d27; border: 1px solid #2d3148; border-radius: 1rem; padding: 0.35rem 0.75rem; font-size: 0.78rem; cursor: pointer; color: #94a3b8; transition: border-color 0.15s; }
+    .suggestion:hover { border-color: #7c3aed; color: #a78bfa; }
+  </style>
+</head>
+<body>
+<header>
+  <h1>llama-bindings · Agent Team</h1>
+  <span>Browser JS · Knowledge + Tools + Multi-turn</span>
+</header>
+<div id="status" class="loading">Initialising agent...</div>
+<main>
+  <div id="chat"></div>
+  <div id="suggestions">
+    <span class="suggestion">What is llama-bindings?</span>
+    <span class="suggestion">How does the Go binding avoid CGO?</span>
+    <span class="suggestion">What is the square root of 144?</span>
+    <span class="suggestion">What chat model is used?</span>
+    <span class="suggestion">How do I build everything?</span>
+  </div>
+  <div id="input-row">
+    <input id="input" type="text" placeholder="Ask the agent..." disabled />
+    <button id="send" disabled>Send</button>
+  </div>
+</main>
+
+<script type="module">
+  import { Agent } from '/bindings/js-browser/src/agent/agent.js';
+
+  const CHAT_MODEL  = window.LLAMA_CHAT_MODEL  || 'gemma-4-E2B-it-Q4_K_M.gguf';
+  const EMBED_MODEL = window.LLAMA_EMBED_MODEL || 'nomic-embed-text-v1.5.Q4_K_M.gguf';
+  const SESSION     = 'user-session';
+
+  const statusEl = document.getElementById('status');
+  const chatEl   = document.getElementById('chat');
+  const inputEl  = document.getElementById('input');
+  const sendBtn  = document.getElementById('send');
+
+  function addMsg(role, text) {
+    const el = document.createElement('div');
+    el.className = `msg ${role}`;
+    el.textContent = text;
+    chatEl.appendChild(el);
+    chatEl.scrollTop = chatEl.scrollHeight;
+  }
+
+  function setStatus(text, cls) {
+    statusEl.textContent = text;
+    statusEl.className = cls;
+  }
+
+  // ── Init agent ────────────────────────────────────────────────────────────
+  let agent;
+  try {
+    setStatus('Loading agent (chat + embed + knowledge)...', 'loading');
+    agent = await Agent.create(CHAT_MODEL, EMBED_MODEL, ':memory:');
+
+    // Add knowledge documents
+    const docs = [
+      'llama-bindings is a cross-language library that wraps llama.cpp with a unified API for Go, Java, and Browser JavaScript.',
+      'The Go binding uses purego for dynamic loading — no CGO required. Import path: github.com/muthuishere/llama-bindings/go/llama.',
+      'The Java binding uses Project Panama FFM (JDK 22) instead of JNI. Artifact: com.example.llama:llama-java.',
+      'The Browser JS binding compiles llama.cpp to WebAssembly via Emscripten. Package: @llama-bindings/js-browser.',
+      'The Agent layer combines ChatEngine, EmbedEngine, KnowledgeStore, and ToolRegistry into a single orchestrated loop.',
+      'Build all targets with: task build. Run all tests with: task test. Download models with: task download-model.',
+      'The chat model is Gemma 4 E2B (2.3B effective parameters, native tool calling tokens, Apache 2.0 license).',
+      'The embed model is nomic-embed-text-v1.5 (137M parameters, 80 MB Q4_K_M, purpose-built for semantic search).',
+    ];
+    for (const doc of docs) await agent.addDocument(doc);
+
+    // Register calculator tool
+    agent.addTool(
+      {
+        name: 'calculate',
+        description: 'Perform basic arithmetic. Supports add, subtract, multiply, divide, sqrt.',
+        parameters: {
+          type: 'object',
+          properties: {
+            operation: { type: 'string', enum: ['add','subtract','multiply','divide','sqrt'] },
+            a: { type: 'number', description: 'First operand' },
+            b: { type: 'number', description: 'Second operand (not used for sqrt)' },
+          },
+          required: ['operation', 'a'],
+          additionalProperties: false,
+        },
+      },
+      async ({ operation, a, b = 0 }) => {
+        let result;
+        switch (operation) {
+          case 'add':      result = a + b; break;
+          case 'subtract': result = a - b; break;
+          case 'multiply': result = a * b; break;
+          case 'divide':
+            if (b === 0) throw new Error('division by zero');
+            result = a / b; break;
+          case 'sqrt': result = Math.sqrt(a); break;
+          default: throw new Error(`unknown operation: ${operation}`);
+        }
+        addMsg('tool', `🔧 calculate(${operation}, ${a}${b !== 0 ? ', '+b : ''}) = ${result}`);
+        return { result };
+      }
+    );
+
+    setStatus('Agent ready · 8 documents loaded · calculator tool registered', 'ready');
+    addMsg('system', 'Agent ready. Knowledge: llama-bindings docs. Tool: calculator.');
+    inputEl.disabled = false;
+    sendBtn.disabled = false;
+    inputEl.focus();
+
+  } catch (err) {
+    setStatus(`Error: ${err.message}`, 'error');
+    addMsg('system', `Failed to initialise: ${err.message}`);
+  }
+
+  // ── Send message ──────────────────────────────────────────────────────────
+  async function sendMessage() {
+    const text = inputEl.value.trim();
+    if (!text || !agent) return;
+
+    inputEl.value = '';
+    inputEl.disabled = true;
+    sendBtn.disabled = true;
+    addMsg('user', text);
+
+    try {
+      const reply = await agent.chat(SESSION, text);
+      addMsg('agent', reply);
+    } catch (err) {
+      addMsg('system', `Error: ${err.message}`);
+    } finally {
+      inputEl.disabled = false;
+      sendBtn.disabled = false;
+      inputEl.focus();
+    }
+  }
+
+  sendBtn.addEventListener('click', sendMessage);
+  inputEl.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) sendMessage(); });
+
+  // Suggestion chips
+  document.querySelectorAll('.suggestion').forEach(el => {
+    el.addEventListener('click', () => {
+      inputEl.value = el.textContent;
+      sendMessage();
+    });
+  });
+</script>
+</body>
+</html>

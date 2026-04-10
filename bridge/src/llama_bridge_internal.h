@@ -2,6 +2,7 @@
 #define LLAMA_BRIDGE_INTERNAL_H
 
 #include "../include/llama_bridge.h"
+#include "llama.h"
 #include <stdint.h>
 #include <time.h>
 
@@ -10,29 +11,31 @@
 /* ------------------------------------------------------------------ */
 
 typedef struct llama_chat_engine_impl {
-    char*            model_path;
-    llama_event_cb   on_event;
-    void*            user_data;
-    int              closed;
-    /* llama.cpp context pointers go here once llama.cpp is integrated */
-    void*            llama_model;
-    void*            llama_ctx;
+    char*                      model_path;
+    llama_event_cb             on_event;
+    void*                      user_data;
+    int                        closed;
+    struct llama_model *       llama_model;
+    struct llama_context *     llama_ctx;
 } llama_chat_engine_impl_t;
 
 typedef struct llama_embed_engine_impl {
-    char*            model_path;
-    llama_event_cb   on_event;
-    void*            user_data;
-    int              closed;
-    int              embed_dim;
-    /* llama.cpp context pointers go here once llama.cpp is integrated */
-    void*            llama_model;
-    void*            llama_ctx;
+    char*                      model_path;
+    llama_event_cb             on_event;
+    void*                      user_data;
+    int                        closed;
+    int                        embed_dim;
+    struct llama_model *       llama_model;
+    struct llama_context *     llama_ctx;
 } llama_embed_engine_impl_t;
 
 /* ------------------------------------------------------------------ */
 /* JSON helpers (llama_bridge_json.c)                                  */
 /* ------------------------------------------------------------------ */
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /* Parse a string field from a flat JSON object. Caller must free result. */
 char* bridge_json_get_string(const char* json, const char* key);
@@ -64,14 +67,18 @@ void bridge_emit(llama_event_cb cb, void* user_data,
 /* Return current time in milliseconds since epoch. */
 int64_t bridge_now_ms(void);
 
+#ifdef __cplusplus
+} /* extern "C" */
+#endif
+
 /* ------------------------------------------------------------------ */
-/* Chat inference (llama_bridge_chat.c)                                */
+/* Chat inference (llama_bridge_chat.cpp)                              */
 /* ------------------------------------------------------------------ */
 
 char* bridge_chat_infer(llama_chat_engine_impl_t* impl, const char* request_json);
 
 /* ------------------------------------------------------------------ */
-/* Embed inference (llama_bridge_embed.c)                              */
+/* Embed inference (llama_bridge_embed.cpp)                            */
 /* ------------------------------------------------------------------ */
 
 float* bridge_embed_infer(llama_embed_engine_impl_t* impl,

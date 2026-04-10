@@ -7,9 +7,9 @@
   Served by the Playwright web server from the project root, so imports from
   /bindings/js-browser/src/ resolve correctly.
 
-  Model: Qwen2.5-0.5B-Instruct-GGUF
-    - When the WASM bridge is built (task build-wasm), the model is fetched
-      and real inference runs.
+  Models:
+    - Chat:  Gemma 4 E2B Q4_K_M (real inference when WASM built)
+    - Embed: nomic-embed-text-v1.5 Q4_K_M (real inference when WASM built)
     - Without the WASM build the stub module is used, which exercises the full
       API surface with deterministic responses.
 
@@ -24,10 +24,11 @@
 <script type="module">
   import { LlamaChat }  from '/bindings/js-browser/src/chat.js';
   import { LlamaEmbed } from '/bindings/js-browser/src/embed.js';
+  import { Agent }      from '/bindings/js-browser/src/agent/agent.js';
 
-  // Model to use — the stub module ignores this path.
-  // When the WASM bridge is available, this should be a reachable URL.
-  const MODEL_PATH = window.LLAMA_MODEL_PATH || 'qwen2.5-0.5b-instruct-q4_k_m.gguf';
+  // Model paths — stub module ignores these; real WASM bridge uses them.
+  const CHAT_MODEL  = window.LLAMA_CHAT_MODEL  || 'gemma-4-E2B-it-Q4_K_M.gguf';
+  const EMBED_MODEL = window.LLAMA_EMBED_MODEL || 'nomic-embed-text-v1.5.Q4_K_M.gguf';
 
   window.__llama_ready   = false;
   window.__llama_results = {};
@@ -40,7 +41,7 @@
     // Chat — text mode
     // ------------------------------------------------------------------
     const chatEvents = [];
-    const chat = await LlamaChat.load(MODEL_PATH, {
+    const chat = await LlamaChat.load(CHAT_MODEL, {
       onEvent: (e) => chatEvents.push(e.event),
     });
     try {
@@ -101,7 +102,7 @@
     // Embed
     // ------------------------------------------------------------------
     const embedEvents = [];
-    const embed = await LlamaEmbed.load(MODEL_PATH, {
+    const embed = await LlamaEmbed.load(EMBED_MODEL, {
       onEvent: (e) => embedEvents.push(e.event),
     });
     try {
@@ -112,6 +113,54 @@
       embed.close();
     }
     results.embedEvents = embedEvents;
+
+    // ------------------------------------------------------------------
+    // Agent — basic chat
+    // ------------------------------------------------------------------
+    const agentA = await Agent.create(CHAT_MODEL, EMBED_MODEL, ':memory:');
+    try {
+      results.agentChat = await agentA.chat('session-1', 'Say hello in exactly one word.');
+    } finally {
+      agentA.close();
+    }
+
+    // ------------------------------------------------------------------
+    // Agent — knowledge (addDocument → query)
+    // ------------------------------------------------------------------
+    const agentB = await Agent.create(CHAT_MODEL, EMBED_MODEL, ':memory:');
+    try {
+      await agentB.addDocument('The capital of France is Paris.');
+      results.agentWithDoc = await agentB.chat('doc-session', 'What is the capital of France?');
+    } finally {
+      agentB.close();
+    }
+
+    // ------------------------------------------------------------------
+    // Agent — tool dispatch
+    // ------------------------------------------------------------------
+    const agentC = await Agent.create(CHAT_MODEL, EMBED_MODEL, ':memory:');
+    try {
+      let toolCalled = false;
+      agentC.addTool(
+        { name: 'lookup_weather', description: 'Get weather for a city',
+          parameters: { type: 'object', properties: { city: { type: 'string' } },
+                        required: ['city'], additionalProperties: false } },
+        async ({ city }) => { toolCalled = true; return { temperature: '32°C', city }; }
+      );
+      try {
+        results.agentWithTool = await agentC.chat('tool-session', 'What is the weather in Chennai?');
+      } catch (e) {
+        // Bridge stub always returns tool_call → agent hits iteration limit.
+        // Tolerated until llama.cpp inference is wired into the bridge.
+        results.agentWithTool = e.message && e.message.includes('exceeded') ? 'stub-loop-expected' : '';
+      }
+      results.agentToolWasCalled = toolCalled;
+    } finally {
+      agentC.close();
+    }
+
+    // Agent export → import: not yet implemented in JS binding.
+    results.agentExportImport = null;
   }
 
   runTests()

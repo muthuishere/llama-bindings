@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<!--
+  examples/agent-team/go/index.html
+
+  Chat UI for the Go Gin NDJSON streaming server.
+  Served at http://localhost:8080 by the Gin server (main.go).
+
+  Uses fetch() + ReadableStream to consume NDJSON tokens in real-time.
+  Each response line: {"token":"..."} then {"done":true}
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>llama-bindings · Agent (Go)</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, sans-serif; background: #0f1117; color: #e2e8f0; min-height: 100vh; display: flex; flex-direction: column; }
+    header { background: #1a1d27; border-bottom: 1px solid #2d3148; padding: 1rem 1.5rem; display: flex; align-items: center; gap: 0.75rem; }
+    header h1 { font-size: 1.1rem; font-weight: 600; color: #34d399; }
+    header span { font-size: 0.8rem; color: #64748b; }
+    #status { padding: 0.4rem 1.5rem; font-size: 0.78rem; background: #161922; border-bottom: 1px solid #2d3148; color: #34d399; }
+    main { flex: 1; display: flex; flex-direction: column; max-width: 860px; width: 100%; margin: 0 auto; padding: 1rem 1.5rem; }
+    #chat { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 0.75rem; margin-bottom: 1rem; min-height: 300px; }
+    .msg { padding: 0.75rem 1rem; border-radius: 0.5rem; max-width: 85%; font-size: 0.9rem; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
+    .msg.user   { background: #1e3a5f; align-self: flex-end; color: #bfdbfe; }
+    .msg.agent  { background: #1a1d27; align-self: flex-start; border: 1px solid #2d3148; color: #e2e8f0; }
+    .msg.system { align-self: center; color: #64748b; font-size: 0.78rem; font-style: italic; }
+    .cursor::after { content: '▌'; animation: blink 0.7s step-end infinite; color: #34d399; }
+    @keyframes blink { 50% { opacity: 0; } }
+    #suggestions { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 0.75rem; }
+    .chip { background: #1a1d27; border: 1px solid #2d3148; border-radius: 1rem; padding: 0.35rem 0.75rem; font-size: 0.78rem; cursor: pointer; color: #94a3b8; transition: border-color 0.15s; }
+    .chip:hover { border-color: #34d399; color: #34d399; }
+    #input-row { display: flex; gap: 0.5rem; }
+    #input { flex: 1; background: #1a1d27; border: 1px solid #2d3148; border-radius: 0.5rem; padding: 0.75rem 1rem; color: #e2e8f0; font-size: 0.9rem; outline: none; }
+    #input:focus { border-color: #34d399; }
+    #input:disabled { opacity: 0.5; }
+    button { background: #059669; color: white; border: none; border-radius: 0.5rem; padding: 0.75rem 1.25rem; cursor: pointer; font-size: 0.9rem; font-weight: 500; transition: background 0.15s; }
+    button:hover:not(:disabled) { background: #047857; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+  </style>
+</head>
+<body>
+<header>
+  <h1>llama-bindings · Agent</h1>
+  <span>Go + Gin · NDJSON streaming · Knowledge + Calculator tool</span>
+</header>
+<div id="status">Ready — Go Gin server · http://localhost:8080</div>
+<main>
+  <div id="chat"></div>
+  <div id="suggestions">
+    <span class="chip">What is llama-bindings?</span>
+    <span class="chip">How does the Go binding avoid CGO?</span>
+    <span class="chip">What is the square root of 144?</span>
+    <span class="chip">Which chat model is used?</span>
+    <span class="chip">How do I run all tests?</span>
+  </div>
+  <div id="input-row">
+    <input id="input" type="text" placeholder="Ask the agent..." />
+    <button id="send">Send</button>
+  </div>
+</main>
+
+<script type="module">
+  const SESSION  = 'web-session';
+  const chatEl   = document.getElementById('chat');
+  const inputEl  = document.getElementById('input');
+  const sendBtn  = document.getElementById('send');
+
+  function addMsg(role, text) {
+    const el = document.createElement('div');
+    el.className = `msg ${role}`;
+    el.textContent = text;
+    chatEl.appendChild(el);
+    chatEl.scrollTop = chatEl.scrollHeight;
+    return el;
+  }
+
+  async function sendMessage() {
+    const text = inputEl.value.trim();
+    if (!text) return;
+
+    inputEl.value = '';
+    inputEl.disabled = true;
+    sendBtn.disabled = true;
+    addMsg('user', text);
+
+    const agentEl = addMsg('agent', '');
+    agentEl.classList.add('cursor');
+    let fullReply = '';
+
+    try {
+      const res = await fetch('/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session: SESSION, message: text }),
+      });
+
+      if (!res.ok) {
+        agentEl.textContent = `HTTP error ${res.status}`;
+        return;
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop(); // keep incomplete trailing line
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const data = JSON.parse(line);
+            if (data.token) {
+              fullReply += data.token;
+              agentEl.textContent = fullReply;
+              chatEl.scrollTop = chatEl.scrollHeight;
+            }
+            if (data.error) {
+              agentEl.textContent = `Error: ${data.error}`;
+            }
+          } catch { /* partial line — ignore */ }
+        }
+      }
+
+      if (!fullReply && !agentEl.textContent.startsWith('Error')) {
+        agentEl.textContent = '(no response)';
+      }
+
+    } catch (err) {
+      agentEl.textContent = `Error: ${err.message}`;
+    } finally {
+      agentEl.classList.remove('cursor');
+      inputEl.disabled = false;
+      sendBtn.disabled = false;
+      inputEl.focus();
+    }
+  }
+
+  sendBtn.addEventListener('click', sendMessage);
+  inputEl.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) sendMessage();
+  });
+
+  document.querySelectorAll('.chip').forEach(el => {
+    el.addEventListener('click', () => {
+      inputEl.value = el.textContent;
+      sendMessage();
+    });
+  });
+
+  addMsg('system', 'Connected to Go Gin server · Knowledge: llama-bindings docs · Tool: calculator');
+  inputEl.focus();
+</script>
+</body>
+</html>
