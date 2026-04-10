@@ -4,8 +4,10 @@
 # Use `task build-bridge` (Taskfile) rather than invoking CMake directly.
 
 cmake_minimum_required(VERSION 3.18)
-project(llama_bridge C)
+project(llama_bridge CXX C)
 
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_C_STANDARD 11)
 
 # Path to the cloned llama.cpp repository (https://github.com/ggml-org/llama.cpp)
@@ -16,9 +18,9 @@ set(LLAMA_CPP_DIR "${CMAKE_SOURCE_DIR}/../third_party/llama.cpp-src"
 # Bridge sources
 # -----------------------------------------------------------------------
 add_library(llama_bridge SHARED
-    src/llama_bridge.c
-    src/llama_bridge_chat.c
-    src/llama_bridge_embed.c
+    src/llama_bridge.cpp
+    src/llama_bridge_chat.cpp
+    src/llama_bridge_embed.cpp
     src/llama_bridge_observe.c
     src/llama_bridge_json.c
 )
@@ -31,48 +33,25 @@ target_include_directories(llama_bridge
 )
 
 # -----------------------------------------------------------------------
-# Link llama.cpp once it is built (third_party/llama.cpp-src/build)
-#
-# Use whole-archive / force_load so that every symbol from the static
-# libs is pulled into the shared library, making it fully self-contained.
-# Users can load libllama_bridge.so / .dylib / .dll without installing
-# llama.cpp separately.
+# Link against llama.cpp shared libraries (CPU-only build)
+# NOTE: .dylib linking below is macOS-specific
 # -----------------------------------------------------------------------
-if(EXISTS "${LLAMA_CPP_DIR}/build/libllama.a")
-    set(LLAMA_STATIC_LIBS
-        "${LLAMA_CPP_DIR}/build/libllama.a"
-        "${LLAMA_CPP_DIR}/build/ggml/src/libggml.a"
-    )
-elseif(EXISTS "${LLAMA_CPP_DIR}/build/src/libllama.a")
-    set(LLAMA_STATIC_LIBS
-        "${LLAMA_CPP_DIR}/build/src/libllama.a"
-    )
-else()
-    set(LLAMA_STATIC_LIBS "")
-endif()
+set(LLAMA_DYLIB_DIR "${LLAMA_CPP_DIR}/build/bin"
+    CACHE PATH "Directory containing llama.cpp shared libraries")
 
-if(LLAMA_STATIC_LIBS)
-    if(APPLE)
-        # macOS: -force_load includes every object file from the archive.
-        foreach(_lib ${LLAMA_STATIC_LIBS})
-            target_link_libraries(llama_bridge PRIVATE "-Wl,-force_load,${_lib}")
-        endforeach()
-    elseif(UNIX)
-        # Linux / other ELF: --whole-archive / --no-whole-archive wraps the
-        # static libs so every object is included in the shared library.
-        target_link_libraries(llama_bridge PRIVATE
-            "-Wl,--whole-archive"
-            ${LLAMA_STATIC_LIBS}
-            "-Wl,--no-whole-archive"
-        )
-    elseif(WIN32)
-        # MSVC / MinGW: /WHOLEARCHIVE includes all objects.
-        foreach(_lib ${LLAMA_STATIC_LIBS})
-            target_link_options(llama_bridge PRIVATE "/WHOLEARCHIVE:${_lib}")
-        endforeach()
-        target_link_libraries(llama_bridge PRIVATE ${LLAMA_STATIC_LIBS})
-    endif()
-endif()
+target_link_libraries(llama_bridge PRIVATE
+    "${LLAMA_DYLIB_DIR}/libllama.dylib"
+    "${LLAMA_DYLIB_DIR}/libggml.dylib"
+    "${LLAMA_DYLIB_DIR}/libggml-base.dylib"
+    "${LLAMA_DYLIB_DIR}/libggml-cpu.dylib"
+    "${LLAMA_DYLIB_DIR}/libggml-blas.dylib"
+)
+
+# Set rpath so bridge finds ggml dylibs in same directory at runtime
+set_target_properties(llama_bridge PROPERTIES
+    INSTALL_RPATH "@loader_path"
+    BUILD_WITH_INSTALL_RPATH TRUE
+)
 
 # -----------------------------------------------------------------------
 # WASM target (set -DTARGET_WASM=ON when building with emcmake)

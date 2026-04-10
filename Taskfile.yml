@@ -25,10 +25,14 @@ vars:
   JS_DIR:          "{{.ROOT_DIR}}/bindings/js-browser"
   E2E_DIR:         "{{.ROOT_DIR}}/tests/e2e"
   MODELS_DIR:      "{{.ROOT_DIR}}/tests/models"
-  # Qwen2.5-0.5B-Instruct GGUF used for e2e tests (~400 MB).
-  # Source: https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF
-  CHAT_MODEL:      "{{.MODELS_DIR}}/qwen2.5-0.5b-instruct-q4_k_m.gguf"
-  EMBED_MODEL:     "{{.MODELS_DIR}}/qwen2.5-0.5b-instruct-q4_k_m.gguf"
+  # Models live in ~/llama-bindings-conf/models/ (outside the repo).
+  # Run `task download-model` to fetch them.
+  # Chat: Gemma 4 E2B Q4_K_M (~3.1 GB) — native tool-calling tokens, Apache 2.0
+  # Embed: nomic-embed-text-v1.5 Q4_K_M (~80 MB) — dedicated embedding model
+  CHAT_MODEL:
+    sh: echo "$HOME/llama-bindings-conf/models/chat/gemma-4-E2B-it-Q4_K_M.gguf"
+  EMBED_MODEL:
+    sh: echo "$HOME/llama-bindings-conf/models/embeddings/nomic-embed-text-v1.5.Q4_K_M.gguf"
 
 # ---------------------------------------------------------------------------
 # Default
@@ -80,7 +84,7 @@ tasks:
     desc: "Build llama.cpp from https://github.com/ggml-org/llama.cpp (native)"
     deps: [init]
     cmds:
-      - cmake -S {{.LLAMA_CPP_DIR}} -B {{.LLAMA_CPP_DIR}}/build -DCMAKE_BUILD_TYPE=Release -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF
+      - cmake -S {{.LLAMA_CPP_DIR}} -B {{.LLAMA_CPP_DIR}}/build -DCMAKE_BUILD_TYPE=Release -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DGGML_METAL=OFF
       - cmake --build {{.LLAMA_CPP_DIR}}/build --config Release -j
 
 # ---------------------------------------------------------------------------
@@ -175,7 +179,7 @@ tasks:
       - npm run build
 
   test-js:
-    desc: Run JS browser binding tests
+    desc: Run JS browser binding tests (Jest, no WASM required)
     dir: "{{.JS_DIR}}"
     cmds:
       - npm ci
@@ -193,26 +197,40 @@ tasks:
 # ---------------------------------------------------------------------------
   test:
     desc: Run all tests (Go + Java + JS)
-    cmds:
-      - task: test-go
-      - task: test-java
-      - task: test-js
+    deps: [test-go, test-java, test-js]
 
   build:
     desc: Build all targets (bridge + Go + Java + JS)
-    cmds:
-      - task: build-bridge
-      - task: build-go
-      - task: build-java
-      - task: build-js
+    deps: [build-go, build-java, build-js]
 
 # ---------------------------------------------------------------------------
 # Download model
 # ---------------------------------------------------------------------------
   download-model:
-    desc: "Download Qwen2.5-0.5B-Instruct GGUF for e2e tests (~400 MB from HuggingFace)"
+    desc: "Download Gemma 4 E2B (chat, ~3.1 GB) and nomic-embed-text-v1.5 (embed, ~80 MB) to ~/llama-bindings-conf/models/"
     cmds:
-      - bash {{.E2E_DIR}}/download_model.sh
+      - mkdir -p "$HOME/llama-bindings-conf/models/chat" "$HOME/llama-bindings-conf/models/embeddings"
+      - |
+        (
+          if [ ! -f "$HOME/llama-bindings-conf/models/chat/gemma-4-E2B-it-Q4_K_M.gguf" ]; then
+            echo "Downloading Gemma 4 E2B Q4_K_M (~3.1 GB)..."
+            huggingface-cli download unsloth/gemma-4-E2B-it-GGUF gemma-4-E2B-it-Q4_K_M.gguf \
+              --local-dir "$HOME/llama-bindings-conf/models/chat/"
+          else
+            echo "Chat model already present — skipping."
+          fi
+        ) &
+        (
+          if [ ! -f "$HOME/llama-bindings-conf/models/embeddings/nomic-embed-text-v1.5.Q4_K_M.gguf" ]; then
+            echo "Downloading nomic-embed-text-v1.5 Q4_K_M (~80 MB)..."
+            huggingface-cli download nomic-ai/nomic-embed-text-v1.5-GGUF nomic-embed-text-v1.5.Q4_K_M.gguf \
+              --local-dir "$HOME/llama-bindings-conf/models/embeddings/"
+          else
+            echo "Embed model already present — skipping."
+          fi
+        ) &
+        wait
+        echo "All models ready."
 
 # ---------------------------------------------------------------------------
 # E2E tests  (require: task build-bridge && task download-model)
@@ -227,12 +245,13 @@ tasks:
         go test -tags e2e ./... -v -count=1
 
   e2e-java:
-    desc: "Run Java e2e tests against the real Qwen2.5 model (requires build-bridge + download-model)"
+    desc: "Run Java e2e tests against the real models (requires build-bridge + download-model)"
     dir: "{{.JAVA_DIR}}"
     cmds:
       - |
         mvn -B test -Pe2e \
             -Dbridge.lib.dir={{.BRIDGE_BUILD}} \
+            -Djava.library.path={{.BRIDGE_BUILD}} \
             -DLLAMA_CHAT_MODEL={{.CHAT_MODEL}} \
             -DLLAMA_EMBED_MODEL={{.EMBED_MODEL}}
 
@@ -246,10 +265,43 @@ tasks:
 
   e2e:
     desc: "Run all e2e tests (Go + Java + browser JS via Playwright)"
+    deps: [e2e-go, e2e-java, e2e-js]
+
+# ---------------------------------------------------------------------------
+# Examples
+# ---------------------------------------------------------------------------
+  example-go:
+    desc: "Run the Agent Team Go Gin server (NDJSON streaming) — open http://localhost:8080"
+    dir: "{{.ROOT_DIR}}/examples/agent-team/go"
     cmds:
-      - task: e2e-go
-      - task: e2e-java
-      - task: e2e-js
+      - go mod tidy
+      - |
+        LLAMA_CHAT_MODEL={{.CHAT_MODEL}} \
+        LLAMA_EMBED_MODEL={{.EMBED_MODEL}} \
+        go run main.go
+
+  example-java:
+    desc: "Run the Agent Team Java Spring Boot server (NDJSON streaming) — open http://localhost:8081"
+    dir: "{{.ROOT_DIR}}/examples/agent-team/java"
+    cmds:
+      - mvn -B package -q -Dbridge.lib.dir={{.BRIDGE_BUILD}}
+      - |
+        LLAMA_CHAT_MODEL={{.CHAT_MODEL}} \
+        LLAMA_EMBED_MODEL={{.EMBED_MODEL}} \
+        java -Djava.library.path={{.BRIDGE_BUILD}} \
+             -jar target/agent-team-java-1.0-SNAPSHOT.jar
+
+  example-js:
+    desc: "Serve the Agent Team browser example — open http://localhost:3000/examples/agent-team/js-browser/"
+    cmds:
+      - echo "Serving repo root at http://localhost:3000 — open examples/agent-team/js-browser/ in your browser"
+      - npx serve -l 3000 {{.ROOT_DIR}}
+
+  example:
+    desc: "Run all Agent Team examples: Go (:8080) + Java (:8081) + JS (:3000)"
+    cmds:
+      - task: example-go
+      - task: example-java
 
 # ---------------------------------------------------------------------------
 # Upgrade

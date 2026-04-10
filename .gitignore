@@ -38,3 +38,5 @@ Thumbs.db
 # publishing so that `go get` and Maven fat-JAR consumers get a working binary.
 # Do NOT add bindings/go/llama/prebuilt/ or bindings/java/src/main/resources/native/
 # to this ignore list.
+examples/agent-team/go/agent-team-go
+example.log
