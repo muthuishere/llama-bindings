@@ -27,6 +27,11 @@ task e2e-java         # Java e2e only
 task e2e-js           # Playwright browser e2e only
 
 task upgrade          # Pull latest llama.cpp + rebuild bridge
+
+task e2e-examples     # Run API + Playwright e2e against running example servers (JSON report)
+task e2e-examples-go  # Go example only
+task e2e-examples-java # Java example only
+task e2e-examples-js  # Playwright JS browser only
 ```
 
 ### Running a single test
@@ -105,11 +110,23 @@ Bridge compiled to WASM via Emscripten. `scripts/build.mjs` copies WASM artifact
 
 ## Models
 
-Models are stored outside the repo at `~/llama-bindings-conf/models/`. Two models:
-- **Chat:** `chat/gemma-4-E2B-it-Q4_K_M.gguf` (~3.1 GB) — tool-calling capable
+Models are stored outside the repo at `~/llama-bindings-conf/models/`.
+
+- **Chat (CPU-friendly):** `chat/qwen2.5-1.5b-instruct-q4_k_m.gguf` (~1 GB) — decoder-only, native tool calling, fast on CPU. Used by examples.
+- **Chat (large):** `chat/gemma-4-E2B-it-Q4_K_M.gguf` (~3.1 GB) — encoder-decoder, needs GPU or patience on CPU.
 - **Embed:** `embeddings/nomic-embed-text-v1.5.Q4_K_M.gguf` (~80 MB)
 
 Override with env vars: `LLAMA_CHAT_MODEL`, `LLAMA_EMBED_MODEL`.
+
+## Workflow
+
+See `AGENTS.md` for the full workflow. The key rule: **spec before implementation**.
+
+1. Read the relevant code and existing docs first.
+2. Create or update a spec in `docs/specs/` (use `docs/specs/spec-template.md`).
+3. Implement only after the spec exists.
+4. Update `README.md`, `CLAUDE.md`, `CHANGELOG.md` if user-visible behavior changed.
+5. Verify with the narrowest useful tests, then broader validation if cross-cutting.
 
 ## Key Constraints
 
