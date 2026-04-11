@@ -5,8 +5,8 @@
              https://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
 
-  <groupId>com.example.llama</groupId>
-  <artifactId>llama-java</artifactId>
+  <groupId>tools.muthuishere</groupId>
+  <artifactId>llama-bindings-java</artifactId>
   <version>0.1.0</version>
   <packaging>jar</packaging>
 

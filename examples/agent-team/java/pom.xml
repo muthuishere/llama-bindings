@@ -33,8 +33,8 @@
         cd bindings/java && mvn install -DskipTests -Dbridge.lib.dir=../../bridge/build
     -->
     <dependency>
-      <groupId>com.example.llama</groupId>
-      <artifactId>llama-java</artifactId>
+      <groupId>tools.muthuishere</groupId>
+      <artifactId>llama-bindings-java</artifactId>
       <version>0.1.0</version>
     </dependency>
 

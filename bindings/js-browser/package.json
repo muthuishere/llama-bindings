@@ -1,5 +1,5 @@
 {
-  "name": "@llama-bindings/js-browser",
+  "name": "@muthuishere/llamabindings-browser",
   "version": "0.1.0",
   "description": "Browser JavaScript / WebAssembly bindings for the llama.cpp bridge library",
   "keywords": [

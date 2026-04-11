@@ -1,0 +1,142 @@
+# Release — build bridge on 4 platforms, package prebuilts, create GitHub release
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Build native bridge on each platform (same matrix as CI)
+  # ---------------------------------------------------------------------------
+  build-bridge:
+    name: Bridge (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-13,       target: darwin_amd64,  lib: libllama_bridge.dylib }
+          - { os: macos-14,       target: darwin_arm64,  lib: libllama_bridge.dylib }
+          - { os: ubuntu-latest,  target: linux_amd64,   lib: libllama_bridge.so    }
+          - { os: windows-latest, target: windows_amd64, lib: llama_bridge.dll      }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Clone llama.cpp
+        run: git clone --depth 1 https://github.com/ggml-org/llama.cpp third_party/llama.cpp-src
+
+      - name: Build llama.cpp
+        shell: bash
+        run: |
+          cmake -S third_party/llama.cpp-src -B third_party/llama.cpp-src/build \
+            -DCMAKE_BUILD_TYPE=Release -DLLAMA_BUILD_TESTS=OFF \
+            -DLLAMA_BUILD_EXAMPLES=OFF -DGGML_METAL=OFF
+          cmake --build third_party/llama.cpp-src/build --config Release \
+            -j$(nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 4)
+
+      - name: Build bridge
+        shell: bash
+        run: |
+          DYLIB_DIR="${{ github.workspace }}/third_party/llama.cpp-src/build/bin"
+          if [ -d "$DYLIB_DIR/Release" ]; then
+            DYLIB_DIR="$DYLIB_DIR/Release"
+          fi
+          mkdir -p bridge/build
+          cmake -S bridge -B bridge/build -DCMAKE_BUILD_TYPE=Release \
+            -DLLAMA_CPP_DIR=${{ github.workspace }}/third_party/llama.cpp-src \
+            -DLLAMA_DYLIB_DIR="$DYLIB_DIR"
+          cmake --build bridge/build --config Release \
+            -j$(nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 4)
+
+      - name: Upload bridge artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bridge-${{ matrix.target }}
+          path: bridge/build/
+          retention-days: 3
+
+  # ---------------------------------------------------------------------------
+  # Download all 4 platform artifacts, organize, and package
+  # ---------------------------------------------------------------------------
+  package:
+    name: Package prebuilts
+    needs: build-bridge
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with: { name: bridge-darwin_amd64,  path: prebuilts/darwin_amd64 }
+      - uses: actions/download-artifact@v4
+        with: { name: bridge-darwin_arm64,  path: prebuilts/darwin_arm64 }
+      - uses: actions/download-artifact@v4
+        with: { name: bridge-linux_amd64,   path: prebuilts/linux_amd64 }
+      - uses: actions/download-artifact@v4
+        with: { name: bridge-windows_amd64, path: prebuilts/windows_amd64 }
+
+      # Library files may be nested in Release/ subdirs (Windows). Flatten them.
+      - name: Organize prebuilts
+        run: |
+          for dir in prebuilts/*/; do
+            find "$dir" -name "*.dylib" -o -name "*.so" -o -name "*.dll" | while read f; do
+              cp "$f" "$dir"
+            done
+          done
+
+      # Place natives into Go prebuilt directory structure
+      - name: Populate Go prebuilts
+        run: |
+          for target in darwin_amd64 darwin_arm64 linux_amd64 windows_amd64; do
+            mkdir -p bindings/go/llama/prebuilt/$target
+            cp prebuilts/$target/libllama_bridge.* prebuilts/$target/llama_bridge.* \
+               bindings/go/llama/prebuilt/$target/ 2>/dev/null || true
+          done
+
+      # Place natives into Java resources directory structure
+      - name: Populate Java natives
+        run: |
+          for target in darwin_amd64 darwin_arm64 linux_amd64 windows_amd64; do
+            mkdir -p bindings/java/src/main/resources/native/$target
+            cp prebuilts/$target/libllama_bridge.* prebuilts/$target/llama_bridge.* \
+               bindings/java/src/main/resources/native/$target/ 2>/dev/null || true
+          done
+
+      # Create a single tarball of all platform natives
+      - name: Create release archive
+        run: tar czf llama-bindings-natives-${{ github.ref_name }}.tar.gz -C prebuilts .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-package
+          path: llama-bindings-natives-*.tar.gz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: go-prebuilts
+          path: bindings/go/llama/prebuilt/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: java-natives
+          path: bindings/java/src/main/resources/native/
+
+  # ---------------------------------------------------------------------------
+  # Create GitHub release with the native archive
+  # ---------------------------------------------------------------------------
+  release:
+    name: GitHub Release
+    needs: package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-package
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: llama-bindings-natives-*.tar.gz
+          generate_release_notes: true
