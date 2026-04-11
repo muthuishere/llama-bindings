@@ -304,6 +304,33 @@ tasks:
       - task: example-java
 
 # ---------------------------------------------------------------------------
+# E2E examples (requires running servers: task example-go, task example-java, npx serve)
+# ---------------------------------------------------------------------------
+  e2e-examples:
+    desc: "Run API + Playwright e2e tests against running example servers, output JSON report"
+    dir: "{{.ROOT_DIR}}/tests/e2e"
+    cmds:
+      - bash run-e2e-examples.sh
+
+  e2e-examples-go:
+    desc: "Run e2e tests against Go example server only"
+    dir: "{{.ROOT_DIR}}/tests/e2e"
+    cmds:
+      - bash run-e2e-examples.sh --skip-java --skip-js
+
+  e2e-examples-java:
+    desc: "Run e2e tests against Java example server only"
+    dir: "{{.ROOT_DIR}}/tests/e2e"
+    cmds:
+      - bash run-e2e-examples.sh --skip-go --skip-js
+
+  e2e-examples-js:
+    desc: "Run Playwright e2e tests against JS browser example only"
+    dir: "{{.ROOT_DIR}}/tests/e2e"
+    cmds:
+      - bash run-e2e-examples.sh --skip-go --skip-java
+
+# ---------------------------------------------------------------------------
 # Upgrade
 # ---------------------------------------------------------------------------
   upgrade:

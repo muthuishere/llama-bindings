@@ -20,6 +20,16 @@ async function openApp(page) {
 }
 
 // ---------------------------------------------------------------------------
+// Helper: open the Agent Team example page and wait for "Agent ready"
+// ---------------------------------------------------------------------------
+const EXAMPLE_URL = '/examples/agent-team/js-browser/';
+
+async function openExample(page) {
+  await page.goto(EXAMPLE_URL);
+  await page.waitForSelector('#status.ready', { timeout: 15_000 });
+}
+
+// ---------------------------------------------------------------------------
 // Agent — basic chat
 // ---------------------------------------------------------------------------
 
@@ -108,4 +118,87 @@ test('Agent chat after close throws', async ({ page }) => {
   });
 
   expect(threw).toBe(true);
+});
+
+// ===========================================================================
+// Agent Team Example — interactive UI tests
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// page_load — example page loads and shows "Agent ready"
+// ---------------------------------------------------------------------------
+
+test('page_load: example page loads and shows Agent ready', async ({ page }) => {
+  await openExample(page);
+
+  const statusText = await page.locator('#status').textContent();
+  expect(statusText).toContain('Agent ready');
+});
+
+// ---------------------------------------------------------------------------
+// chat — click suggestion chip and get a response
+// ---------------------------------------------------------------------------
+
+test('chat: clicking suggestion chip produces agent response', async ({ page }) => {
+  await openExample(page);
+
+  // Click the "What is llama-bindings?" suggestion chip
+  await page.locator('.suggestion', { hasText: 'What is llama-bindings?' }).click();
+
+  // Wait for an agent response bubble to appear
+  const agentMsg = page.locator('.msg.agent').first();
+  await agentMsg.waitFor({ state: 'visible', timeout: 10_000 });
+
+  const text = await agentMsg.textContent();
+  expect(text.trim().length).toBeGreaterThan(0);
+});
+
+// ---------------------------------------------------------------------------
+// chat_tool — click tool-related suggestion chip
+// ---------------------------------------------------------------------------
+
+test('chat_tool: clicking calculator chip produces response', async ({ page }) => {
+  await openExample(page);
+
+  // Click the "What is the square root of 144?" suggestion chip
+  await page.locator('.suggestion', { hasText: 'What is the square root of 144?' }).click();
+
+  // Wait for an agent response bubble to appear
+  const agentMsg = page.locator('.msg.agent').first();
+  await agentMsg.waitFor({ state: 'visible', timeout: 10_000 });
+
+  const text = await agentMsg.textContent();
+  expect(text.trim().length).toBeGreaterThan(0);
+});
+
+// ---------------------------------------------------------------------------
+// multi_turn — two sequential messages produce two agent responses
+// ---------------------------------------------------------------------------
+
+test('multi_turn: two messages produce at least two agent responses', async ({ page }) => {
+  await openExample(page);
+
+  // First message
+  await page.fill('#input', 'Hello');
+  await page.click('#send');
+
+  // Wait for first agent response
+  const firstMsg = page.locator('.msg.agent').first();
+  await firstMsg.waitFor({ state: 'visible', timeout: 10_000 });
+
+  // Wait for input to be re-enabled (agent finished responding)
+  await page.waitForSelector('#input:not([disabled])', { timeout: 10_000 });
+
+  // Second message
+  await page.fill('#input', 'How do I build everything?');
+  await page.click('#send');
+
+  // Wait for at least two agent responses
+  await page.waitForFunction(
+    () => document.querySelectorAll('.msg.agent').length >= 2,
+    { timeout: 10_000 },
+  );
+
+  const agentMessages = await page.locator('.msg.agent').count();
+  expect(agentMessages).toBeGreaterThanOrEqual(2);
 });
