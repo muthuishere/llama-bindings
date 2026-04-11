@@ -49,6 +49,19 @@ After code changes, check whether these also need updates:
 
 If user-visible behavior changed and the docs were not updated, the work is incomplete.
 
+## Documentation Map
+
+- `README.md`
+  User-facing overview, install flow, CLI entrypoints, and configuration basics.
+- `docs/index.md`
+  Documentation hub. Start there if you need to know where a doc belongs.
+- `docs/specs/`
+  Behavior specs and implementation plans. New feature/change work starts here.
+- `docs/decisions/`
+  Narrow architectural decisions, spikes, and tradeoff records.
+- `docs/testing-scenarios.md`
+  Manual and scenario-based validation reference.
+
 ## Verification Expectations
 
 Before closing work:
