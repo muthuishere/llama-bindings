@@ -22,7 +22,6 @@
  *   agent.close();
  */
 
-import { zipSync, unzipSync } from 'fflate';
 import { LlamaChat }      from '../chat.js';
 import { LlamaEmbed }     from '../embed.js';
 import { KnowledgeStore } from '../knowledge/store.js';
@@ -224,6 +223,7 @@ export class Agent {
 
     const knowledgeJson = docs.map(d => ({ text: d.text, embedding: d.embedding }));
 
+    const { zipSync } = await import('fflate');
     const zip = zipSync({
       'manifest.json':  new TextEncoder().encode(JSON.stringify(manifest, null, 2)),
       'knowledge.json': new TextEncoder().encode(JSON.stringify(knowledgeJson)),
@@ -254,6 +254,7 @@ export class Agent {
       throw new Error('Agent.importFrom: unsupported zipData type');
     }
 
+    const { unzipSync } = await import('fflate');
     const files = unzipSync(uint8);
 
     const manifestRaw = new TextDecoder().decode(files['manifest.json']);
