@@ -64,6 +64,58 @@ else:
 "
 }
 
+# Run a curl embed test (regular JSON response)
+run_embed_test() {
+  local target="$1" port="$2"
+  local start_ms end_ms duration raw_response dim
+
+  start_ms=$(now_ms)
+  raw_response=$(curl -s --max-time 60 -X POST "http://localhost:${port}/embed" \
+    -H "Content-Type: application/json" \
+    -d '{"text":"The capital of France is Paris."}' 2>&1) || true
+  end_ms=$(now_ms)
+  duration=$((end_ms - start_ms))
+
+  dim=$(python3 -c "
+import json, sys
+try:
+    obj = json.loads(sys.stdin.read())
+    if 'embedding' in obj and 'dim' in obj and obj['dim'] > 0:
+        print(obj['dim'])
+    else:
+        print(0)
+except Exception:
+    print(0)
+" <<< "$raw_response")
+
+  if [ "$dim" -gt 0 ] 2>/dev/null; then
+    add_result "$target" "embed" "pass" "$duration" "dim=${dim}"
+  else
+    add_result "$target" "embed" "fail" "$duration" "$raw_response"
+  fi
+}
+
+# Run a curl chat-schema test (NDJSON response)
+run_chat_schema_test() {
+  local target="$1" port="$2"
+  local start_ms end_ms duration raw_response reply
+
+  start_ms=$(now_ms)
+  raw_response=$(curl -s --max-time 300 -X POST "http://localhost:${port}/chat-schema" \
+    -H "Content-Type: application/json" \
+    -d "{\"session\":\"e2e-schema-${target}-${RUN_ID}\",\"message\":\"Extract: John is 30 years old\",\"schema\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"},\"age\":{\"type\":\"integer\"}},\"required\":[\"name\",\"age\"]}}" 2>&1) || true
+  end_ms=$(now_ms)
+  duration=$((end_ms - start_ms))
+
+  reply=$(echo "$raw_response" | parse_ndjson_reply)
+
+  if echo "$reply" | grep -qiE 'John|john|30|"name"|"age"'; then
+    add_result "$target" "chat_schema" "pass" "$duration" "$reply"
+  else
+    add_result "$target" "chat_schema" "fail" "$duration" "$reply"
+  fi
+}
+
 # Run a curl chat test
 run_chat_test() {
   local target="$1" test_name="$2" port="$3" session="$4" message="$5" pattern="$6"
@@ -91,6 +143,8 @@ if [ "$SKIP_GO" = false ]; then
     "What is llama-bindings?" "cross-language|library|llama\.cpp"
   run_chat_test "go" "chat_tool" 8080 "e2e-tool-go-${RUN_ID}" \
     "What is the square root of 144?" "12"
+  run_embed_test "go" 8080
+  run_chat_schema_test "go" 8080
 fi
 
 # --- Java tests ---
@@ -99,6 +153,8 @@ if [ "$SKIP_JAVA" = false ]; then
     "What is llama-bindings?" "cross-language|library|llama\.cpp"
   run_chat_test "java" "chat_tool" 8081 "e2e-tool-java-${RUN_ID}" \
     "What is the square root of 144?" "12"
+  run_embed_test "java" 8081
+  run_chat_schema_test "java" 8081
 fi
 
 # --- JS browser (Playwright) ---

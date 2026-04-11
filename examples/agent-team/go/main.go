@@ -46,6 +46,12 @@ import (
 var (
 	globalAgent *agent.Agent
 	agentMu     sync.Mutex
+
+	globalEmbed *llama.EmbedEngine
+	embedMu     sync.Mutex
+
+	globalChat *llama.ChatEngine
+	chatMu     sync.Mutex
 )
 
 // ---------------------------------------------------------------------------
@@ -203,6 +209,110 @@ func handleChat(c *gin.Context) {
 }
 
 // ---------------------------------------------------------------------------
+// POST /embed handler
+// ---------------------------------------------------------------------------
+
+type embedRequest struct {
+	Text string `json:"text" binding:"required"`
+}
+
+func handleEmbed(c *gin.Context) {
+	var req embedRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	start := time.Now()
+
+	embedMu.Lock()
+	vec, err := globalEmbed.Embed(req.Text, llama.EmbedOptions{})
+	embedMu.Unlock()
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	durationMs := time.Since(start).Milliseconds()
+
+	// Convert []float32 to []float64 for JSON serialization.
+	embedding := make([]float64, len(vec))
+	for i, v := range vec {
+		embedding[i] = float64(v)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"embedding":   embedding,
+		"dim":         len(vec),
+		"duration_ms": durationMs,
+	})
+}
+
+// ---------------------------------------------------------------------------
+// POST /chat-schema handler
+// ---------------------------------------------------------------------------
+
+type chatSchemaRequest struct {
+	Session string      `json:"session" binding:"required"`
+	Message string      `json:"message" binding:"required"`
+	Schema  interface{} `json:"schema"  binding:"required"`
+}
+
+func handleChatSchema(c *gin.Context) {
+	var req chatSchemaRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.Header("Content-Type", "application/x-ndjson")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("X-Accel-Buffering", "no")
+
+	w := c.Writer
+
+	chatReq := llama.ChatRequest{
+		Messages: []llama.Message{
+			{Role: "user", Content: req.Message},
+		},
+		ResponseMode: llama.ResponseModeJSONSchema,
+		Schema: &llama.Schema{
+			Name:   "response",
+			Schema: req.Schema,
+		},
+	}
+
+	chatMu.Lock()
+	resp, err := globalChat.Chat(chatReq, llama.ChatOptions{})
+	chatMu.Unlock()
+
+	if err != nil {
+		writeNDJSON(w, map[string]interface{}{"error": err.Error(), "done": true})
+		return
+	}
+
+	// For structured JSON responses, stream the text representation word by word.
+	reply := resp.Text
+	if reply == "" && resp.JSON != nil {
+		raw, _ := json.Marshal(resp.JSON)
+		reply = string(raw)
+	}
+
+	words := strings.Fields(reply)
+	for i, word := range words {
+		token := word
+		if i < len(words)-1 {
+			token += " "
+		}
+		writeNDJSON(w, map[string]string{"token": token})
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	writeNDJSON(w, map[string]interface{}{"done": true, "reply": reply})
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -219,11 +329,31 @@ func main() {
 
 	log.Println("Agent ready. 8 documents loaded. Calculator tool registered.")
 
+	log.Println("Loading embed engine...")
+	emb, err := llama.NewEmbed(embedModelPath(), llama.LoadOptions{})
+	if err != nil {
+		log.Fatalf("EmbedEngine setup failed: %v", err)
+	}
+	globalEmbed = emb
+	defer emb.Close()
+	log.Println("Embed engine ready.")
+
+	log.Println("Loading chat engine...")
+	ch, err := llama.NewChat(chatModelPath(), llama.LoadOptions{})
+	if err != nil {
+		log.Fatalf("ChatEngine setup failed: %v", err)
+	}
+	globalChat = ch
+	defer ch.Close()
+	log.Println("Chat engine ready.")
+
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.Default()
 
 	r.StaticFile("/", "./index.html")
 	r.POST("/chat", handleChat)
+	r.POST("/embed", handleEmbed)
+	r.POST("/chat-schema", handleChatSchema)
 
 	log.Println("Listening on http://localhost:8080")
 	if err := r.Run(":8080"); err != nil {

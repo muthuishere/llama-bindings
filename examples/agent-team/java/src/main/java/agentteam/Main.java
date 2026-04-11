@@ -6,8 +6,10 @@ package agentteam;
 // Uses Spring Boot + NDJSON streaming.
 //
 // Exposes:
-//   POST /chat  — NDJSON streaming: each line is {"token":"..."} then {"done":true}
-//   GET  /      — Chat UI (src/main/resources/static/index.html, auto-served by Spring)
+//   POST /chat         — NDJSON streaming: each line is {"token":"..."} then {"done":true}
+//   POST /embed        — JSON: {"embedding":[...],"dim":768,"duration_ms":123}
+//   POST /chat-schema  — NDJSON streaming with json_schema response mode
+//   GET  /             — Chat UI (src/main/resources/static/index.html, auto-served by Spring)
 //
 // Prerequisites:
 //   1. task build-bridge
@@ -24,7 +26,15 @@ package agentteam;
 // Or via Taskfile:
 //   task example-java
 
+import com.example.llama.ChatEngine;
+import com.example.llama.ChatOptions;
+import com.example.llama.EmbedEngine;
+import com.example.llama.EmbedOptions;
+import com.example.llama.LoadOptions;
 import com.example.llama.agent.Agent;
+import com.example.llama.model.ChatMessage;
+import com.example.llama.model.ChatRequest;
+import com.example.llama.model.ChatResponse;
 import com.example.llama.model.ToolDefinition;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
@@ -39,6 +49,7 @@ import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBo
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Paths;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -50,7 +61,9 @@ public class Main {
     // Request / response records
     // ----------------------------------------------------------------
 
-    record ChatRequest(String session, String message) {}
+    record ChatReq(String session, String message) {}
+    record EmbedRequest(String text) {}
+    record SchemaRequest(String session, String message, Map<String, Object> schema) {}
 
     // ----------------------------------------------------------------
     // Dependencies
@@ -60,6 +73,8 @@ public class Main {
     private ObjectMapper objectMapper;
 
     private Agent agent;
+    private EmbedEngine embedEngine;
+    private ChatEngine chatEngine;
 
     // ----------------------------------------------------------------
     // Lifecycle
@@ -123,11 +138,28 @@ public class Main {
         );
 
         System.out.println("Agent ready. 8 documents loaded. Calculator tool registered.");
+
+        System.out.println("Loading EmbedEngine...");
+        embedEngine = EmbedEngine.load(embedModelPath(), new LoadOptions());
+        System.out.println("EmbedEngine ready.");
+
+        System.out.println("Loading ChatEngine...");
+        chatEngine = ChatEngine.load(chatModelPath(), new LoadOptions());
+        System.out.println("ChatEngine ready.");
+
         System.out.println("Listening on http://localhost:8081");
     }
 
     @PreDestroy
     public void closeAgent() {
+        if (embedEngine != null) {
+            embedEngine.close();
+            System.out.println("EmbedEngine closed.");
+        }
+        if (chatEngine != null) {
+            chatEngine.close();
+            System.out.println("ChatEngine closed.");
+        }
         if (agent != null) {
             agent.close();
             System.out.println("Agent closed.");
@@ -139,10 +171,63 @@ public class Main {
     // ----------------------------------------------------------------
 
     @PostMapping(value = "/chat", produces = "application/x-ndjson")
-    public StreamingResponseBody chat(@RequestBody ChatRequest req) {
+    public StreamingResponseBody chat(@RequestBody ChatReq req) {
         return (OutputStream out) -> {
             try {
                 String reply = agent.chat(req.session(), req.message());
+                String[] parts = reply.split(" ", -1);
+
+                for (int i = 0; i < parts.length; i++) {
+                    String token = parts[i] + (i < parts.length - 1 ? " " : "");
+                    writeNDJSON(out, Map.of("token", token));
+                    Thread.sleep(25);
+                }
+                writeNDJSON(out, Map.of("done", true, "reply", reply));
+
+            } catch (Exception e) {
+                try {
+                    writeNDJSON(out, Map.of("error", e.getMessage() != null ? e.getMessage() : "unknown error", "done", true));
+                } catch (Exception ignored) { }
+            }
+        };
+    }
+
+    @PostMapping(value = "/embed", produces = MediaType.APPLICATION_JSON_VALUE)
+    public Map<String, Object> embed(@RequestBody EmbedRequest req) {
+        try {
+            long start = System.currentTimeMillis();
+            float[] vec = embedEngine.embed(req.text(), new EmbedOptions());
+            long duration = System.currentTimeMillis() - start;
+
+            // Convert float[] to List<Float> for JSON serialisation
+            List<Float> embedding = new ArrayList<>(vec.length);
+            for (float v : vec) embedding.add(v);
+
+            return Map.of(
+                "embedding", embedding,
+                "dim",       vec.length,
+                "duration_ms", duration
+            );
+        } catch (Exception e) {
+            return Map.of("error", e.getMessage() != null ? e.getMessage() : "unknown error");
+        }
+    }
+
+    @PostMapping(value = "/chat-schema", produces = "application/x-ndjson")
+    public StreamingResponseBody chatSchema(@RequestBody SchemaRequest req) {
+        return (OutputStream out) -> {
+            try {
+                ChatRequest chatReq = ChatRequest.builder()
+                        .messages(List.of(ChatMessage.user(req.message())))
+                        .responseMode("json_schema")
+                        .schema(req.schema())
+                        .build();
+
+                ChatResponse resp = chatEngine.chat(chatReq, new ChatOptions());
+
+                // The response text (or json) is streamed word-by-word as NDJSON
+                String reply = resp.text != null ? resp.text
+                        : (resp.json != null ? objectMapper.writeValueAsString(resp.json) : "");
                 String[] parts = reply.split(" ", -1);
 
                 for (int i = 0; i < parts.length; i++) {

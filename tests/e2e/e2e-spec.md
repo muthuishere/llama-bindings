@@ -9,7 +9,8 @@ Run via `task e2e-examples`. Outputs a JSON report with pass/fail and timing.
 |------|------------|--------------|-------------------------|
 | `chat` | POST /chat | POST /chat | Agent.chat() in browser |
 | `chat_tool` | POST /chat (calculator) | POST /chat (calculator) | Agent.chat() with tool |
-| `embed` | POST /embed (if exposed) | POST /embed | LlamaEmbed in browser |
+| `embed` | POST /embed | POST /embed | addDocument (uses embed internally) |
+| `chat_schema` | POST /chat-schema | POST /chat-schema | Structured prompt via chat |
 
 ## API Tests (Go + Java)
 
@@ -29,8 +30,16 @@ Tests send requests and collect the streamed response.
 **Pass criteria:** Response contains "12".
 
 ### Test 3: `embed` — Embedding vector
-Not exposed by example servers. Tested via binding unit tests.
-For the report, include the unit test result for embed.
+```json
+{"text": "The capital of France is Paris."}
+```
+**Pass criteria:** Response contains "embedding" and "dim" fields, and dim > 0.
+
+### Test 4: `chat_schema` — Structured JSON output
+```json
+{"session": "e2e-schema", "message": "Extract: John is 30 years old", "schema": {"type": "object", "properties": {"name": {"type": "string"}, "age": {"type": "integer"}}, "required": ["name", "age"]}}
+```
+**Pass criteria:** Response contains "John" or "john" or "30" or valid JSON with name/age fields.
 
 ## JS Browser Tests (Playwright)
 
@@ -45,6 +54,12 @@ Click "What is the square root of 144?" chip, verify response appears.
 
 ### Test 3: `page_load` — Agent initializes
 Verify "Agent ready" status text appears within 10 seconds.
+
+### Test 4: `embed` — addDocument uses embed engine
+Verify status text contains "8 documents" (addDocument calls embed internally during init).
+
+### Test 5: `chat_schema` — Structured prompt
+Send "List the name and age: John is 30" and verify a non-empty agent response.
 
 ## JSON Report Format
 
@@ -68,6 +83,20 @@ Verify "Agent ready" status text appears within 10 seconds.
       "response": "The square root of 144 is 12."
     },
     {
+      "target": "go",
+      "test": "embed",
+      "status": "pass",
+      "duration_ms": 523,
+      "response": "dim=768"
+    },
+    {
+      "target": "go",
+      "test": "chat_schema",
+      "status": "pass",
+      "duration_ms": 9200,
+      "response": "{\"name\":\"John\",\"age\":30}"
+    },
+    {
       "target": "java",
       "test": "chat",
       "status": "pass",
@@ -75,16 +104,37 @@ Verify "Agent ready" status text appears within 10 seconds.
       "response": "llama-bindings is a cross-language library..."
     },
     {
-      "target": "js-browser",
-      "test": "page_load",
+      "target": "java",
+      "test": "chat_tool",
       "status": "pass",
-      "duration_ms": 1200,
-      "response": "Agent ready"
+      "duration_ms": 12400,
+      "response": "The square root of 144 is 12."
+    },
+    {
+      "target": "java",
+      "test": "embed",
+      "status": "pass",
+      "duration_ms": 610,
+      "response": "dim=768"
+    },
+    {
+      "target": "java",
+      "test": "chat_schema",
+      "status": "pass",
+      "duration_ms": 15300,
+      "response": "{\"name\":\"John\",\"age\":30}"
+    },
+    {
+      "target": "js-browser",
+      "test": "playwright",
+      "status": "pass",
+      "duration_ms": 5200,
+      "response": "Playwright tests passed"
     }
   ],
   "summary": {
-    "total": 7,
-    "passed": 7,
+    "total": 9,
+    "passed": 9,
     "failed": 0
   }
 }

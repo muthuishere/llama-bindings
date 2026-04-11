@@ -172,6 +172,30 @@ test('chat_tool: clicking calculator chip produces response', async ({ page }) =
 });
 
 // ---------------------------------------------------------------------------
+// embed — agent addDocument uses embed engine
+// ---------------------------------------------------------------------------
+
+test('embed: agent addDocument uses embed engine', async ({ page }) => {
+  await openExample(page);
+  // addDocument is called during init (8 docs) — if agent is ready, embed works
+  const status = await page.locator('#status').textContent();
+  expect(status).toContain('8 documents');
+});
+
+// ---------------------------------------------------------------------------
+// chat_schema — agent responds to structured prompt
+// ---------------------------------------------------------------------------
+
+test('chat_schema: agent responds to structured prompt', async ({ page }) => {
+  await openExample(page);
+  await page.fill('#input', 'List the name and age: John is 30');
+  await page.click('#send');
+  await page.waitForSelector('.msg.agent', { timeout: 10000 });
+  const response = await page.locator('.msg.agent').last().textContent();
+  expect(response.length).toBeGreaterThan(0);
+});
+
+// ---------------------------------------------------------------------------
 // multi_turn — two sequential messages produce two agent responses
 // ---------------------------------------------------------------------------
 
