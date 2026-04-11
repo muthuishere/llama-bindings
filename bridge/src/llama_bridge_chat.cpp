@@ -452,6 +452,12 @@ char* bridge_chat_infer(llama_chat_engine_impl_t* impl,
     /* For json_schema mode, inject a system prompt asking for JSON output */
     if (mode == 1) {
         std::string schema_obj = extract_json_object(request_json, "schema");
+        /* If the schema is wrapped (e.g. {"name":"...","schema":{...}}),
+         * unwrap to get the inner schema definition. */
+        if (!schema_obj.empty()) {
+            std::string inner = extract_json_object(schema_obj.c_str(), "schema");
+            if (!inner.empty()) schema_obj = inner;
+        }
         std::string schema_prompt = "Respond with valid JSON only. No explanation, no markdown, just the JSON object.";
         if (!schema_obj.empty()) {
             schema_prompt += " The JSON must match this schema: " + schema_obj;
