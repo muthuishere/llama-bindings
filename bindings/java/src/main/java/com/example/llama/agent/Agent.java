@@ -159,17 +159,23 @@ public final class Agent implements AutoCloseable {
         List<ToolDefinition> toolDefs = registry.definitions();
         List<ChatMessage> msgs = buildMessages(systemPrompt,
                 sessions.get(sessionId));
+        boolean justCalledTool = false;
 
         for (int i = 0; i < MAX_TOOL_ITERATIONS; i++) {
-            boolean isLast = (i == MAX_TOOL_ITERATIONS - 1);
-            String responseMode = (!toolDefs.isEmpty() && !isLast)
-                    ? "tool_call" : "text";
+            // After a tool call + result, ask the model for a text answer.
+            List<ToolDefinition> useTools = toolDefs;
+            String responseMode = toolDefs.isEmpty() ? "text" : "tool_call";
+            if (justCalledTool) {
+                useTools = List.of();
+                responseMode = "text";
+                justCalledTool = false;
+            }
 
             ChatRequest req = ChatRequest.builder()
                     .messages(msgs)
                     .responseMode(responseMode)
-                    .tools(toolDefs.isEmpty() ? null : toolDefs)
-                    .toolChoice(toolDefs.isEmpty() ? null : "auto")
+                    .tools(useTools.isEmpty() ? null : useTools)
+                    .toolChoice(useTools.isEmpty() ? null : "auto")
                     .generation(new GenerationOptions(0.7f, 512, 0.95f, 40))
                     .build();
 
@@ -203,6 +209,8 @@ public final class Agent implements AutoCloseable {
                         }
                         msgs.add(ChatMessage.tool(tc.name, resultJson));
                     }
+                    // Continue the loop — next iteration uses text mode.
+                    justCalledTool = true;
                 }
                 default -> throw new LlamaException("INFERENCE_FAILED",
                         "Agent: unexpected response type: " + resp.type);

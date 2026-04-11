@@ -120,15 +120,22 @@ export class Agent {
     // 4. Agentic loop.
     const toolDefs = this.#registry.definitions();
     const msgs = buildMessages(systemPrompt, history);
+    let justCalledTool = false;
 
     for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
-      // On the final iteration, force text mode to avoid an infinite loop in
-      // case the model keeps returning tool calls (e.g. a misbehaving model or stub).
-      const isLastIteration = i === MAX_TOOL_ITERATIONS - 1;
+      // After a tool call + result, ask the model for a text answer.
+      let useTools = toolDefs;
+      let responseMode = toolDefs.length > 0 ? 'tool_call' : 'text';
+      if (justCalledTool) {
+        useTools = [];
+        responseMode = 'text';
+        justCalledTool = false;
+      }
+
       const req = {
         messages:     msgs,
-        responseMode: (toolDefs.length > 0 && !isLastIteration) ? 'tool_call' : 'text',
-        tools:        toolDefs,
+        responseMode,
+        tools:        useTools,
         toolChoice:   'auto',
       };
 
@@ -164,7 +171,8 @@ export class Agent {
           }
           msgs.push({ role: 'tool', content: resultStr, tool_name: tc.name });
         }
-        // Continue the loop with tool results in context.
+        // Continue the loop — next iteration uses text mode.
+        justCalledTool = true;
         continue;
       }
 
