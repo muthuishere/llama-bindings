@@ -10,9 +10,16 @@ import com.example.llama.model.*;
 import com.example.llama.tools.ToolRegistry;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import java.io.*;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.sql.SQLException;
+import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
+import java.util.zip.ZipOutputStream;
 
 /**
  * Agentic chat loop that orchestrates:
@@ -45,6 +52,9 @@ public final class Agent implements AutoCloseable {
     private final EmbedEngine     embed;
     private final KnowledgeStore  store;
     private final ToolRegistry    registry;
+    private final String          chatModelPath;
+    private final String          embedModelPath;
+    private final String          storagePath;
 
     /** sessionId → ordered message history. */
     private final Map<String, List<ChatMessage>> sessions = new ConcurrentHashMap<>();
@@ -52,11 +62,16 @@ public final class Agent implements AutoCloseable {
     private volatile boolean closed = false;
 
     private Agent(ChatEngine chat, EmbedEngine embed,
-                  KnowledgeStore store, ToolRegistry registry) {
-        this.chat     = chat;
-        this.embed    = embed;
-        this.store    = store;
-        this.registry = registry;
+                  KnowledgeStore store, ToolRegistry registry,
+                  String chatModelPath, String embedModelPath,
+                  String storagePath) {
+        this.chat           = chat;
+        this.embed          = embed;
+        this.store          = store;
+        this.registry       = registry;
+        this.chatModelPath  = chatModelPath;
+        this.embedModelPath = embedModelPath;
+        this.storagePath    = storagePath;
     }
 
     /**
@@ -84,7 +99,8 @@ public final class Agent implements AutoCloseable {
             throw e;
         }
         ToolRegistry registry = new ToolRegistry();
-        return new Agent(chat, embed, store, registry);
+        return new Agent(chat, embed, store, registry,
+                         chatModelPath, embedModelPath, storagePath);
     }
 
     /**
@@ -207,6 +223,146 @@ public final class Agent implements AutoCloseable {
     }
 
     /**
+     * Export a complete Agent bundle to a ZIP archive at {@code zipPath}.
+     *
+     * <p>The archive contains:
+     * <ul>
+     *   <li>{@code manifest.json} – metadata (version, model names, doc count, etc.)</li>
+     *   <li>{@code knowledge.json} – all documents with text and embeddings</li>
+     *   <li>{@code knowledge.db} – raw SQLite file (empty placeholder for in-memory stores)</li>
+     * </ul>
+     *
+     * @param zipPath path where the ZIP archive will be written
+     * @throws IOException  if writing fails
+     * @throws SQLException if the knowledge store cannot be queried
+     */
+    public void export(String zipPath) throws IOException, SQLException {
+        List<KnowledgeStore.Document> docs = store.all();
+
+        // Build manifest.
+        Map<String, Object> manifest = new LinkedHashMap<>();
+        manifest.put("version", "1");
+        manifest.put("created_at", Instant.now().toString());
+        manifest.put("chat_model", Path.of(chatModelPath).getFileName().toString());
+        manifest.put("embed_model", Path.of(embedModelPath).getFileName().toString());
+        manifest.put("storage_path", storagePath);
+        manifest.put("doc_count", docs.size());
+        manifest.put("embedding_dim",
+                docs.isEmpty() ? 0
+                        : (docs.get(0).embedding != null ? docs.get(0).embedding.length : 0));
+
+        // Build knowledge array.
+        List<Map<String, Object>> knowledgeList = new ArrayList<>(docs.size());
+        for (KnowledgeStore.Document doc : docs) {
+            Map<String, Object> entry = new LinkedHashMap<>();
+            entry.put("text", doc.text);
+            if (doc.embedding != null) {
+                List<Float> embList = new ArrayList<>(doc.embedding.length);
+                for (float f : doc.embedding) embList.add(f);
+                entry.put("embedding", embList);
+            } else {
+                entry.put("embedding", List.of());
+            }
+            knowledgeList.add(entry);
+        }
+
+        byte[] manifestBytes  = MAPPER.writerWithDefaultPrettyPrinter()
+                .writeValueAsBytes(manifest);
+        byte[] knowledgeBytes = MAPPER.writerWithDefaultPrettyPrinter()
+                .writeValueAsBytes(knowledgeList);
+
+        // Read SQLite file bytes (or empty placeholder for :memory:).
+        byte[] dbBytes;
+        if (":memory:".equals(storagePath)) {
+            dbBytes = new byte[0];
+        } else {
+            Path dbPath = Path.of(storagePath);
+            dbBytes = Files.exists(dbPath) ? Files.readAllBytes(dbPath) : new byte[0];
+        }
+
+        // Write ZIP archive.
+        try (ZipOutputStream zos = new ZipOutputStream(
+                new BufferedOutputStream(Files.newOutputStream(Path.of(zipPath))))) {
+            writeZipEntry(zos, "manifest.json", manifestBytes);
+            writeZipEntry(zos, "knowledge.json", knowledgeBytes);
+            writeZipEntry(zos, "knowledge.db", dbBytes);
+        }
+    }
+
+    /**
+     * Import an Agent from a previously exported ZIP archive.
+     *
+     * <p>The method extracts the SQLite database from the archive, creates
+     * chat and embed engines from the supplied model paths, and returns a
+     * fully initialised Agent.
+     *
+     * @param zipPath        path to the ZIP archive
+     * @param chatModelPath  path to the chat GGUF model
+     * @param embedModelPath path to the embedding GGUF model
+     * @param storagePath    SQLite path for the restored database;
+     *                       defaults to {@code "agent.db"} if {@code null} or empty
+     * @return a restored Agent
+     * @throws IOException    if reading the archive fails
+     * @throws LlamaException if an engine cannot be loaded
+     * @throws SQLException   if the knowledge store cannot be opened
+     */
+    @SuppressWarnings("unchecked")
+    public static Agent importFrom(String zipPath, String chatModelPath,
+                                   String embedModelPath, String storagePath)
+            throws IOException, LlamaException, SQLException {
+        if (storagePath == null || storagePath.isEmpty()) {
+            storagePath = "agent.db";
+        }
+
+        // Read ZIP entries.
+        byte[] manifestBytes  = null;
+        byte[] dbBytes        = null;
+
+        try (ZipInputStream zis = new ZipInputStream(
+                new BufferedInputStream(Files.newInputStream(Path.of(zipPath))))) {
+            ZipEntry entry;
+            while ((entry = zis.getNextEntry()) != null) {
+                switch (entry.getName()) {
+                    case "manifest.json"  -> manifestBytes = zis.readAllBytes();
+                    case "knowledge.db"   -> dbBytes = zis.readAllBytes();
+                    default -> { /* skip unknown entries */ }
+                }
+                zis.closeEntry();
+            }
+        }
+
+        // Validate manifest.
+        if (manifestBytes == null) {
+            throw new IOException("Invalid agent archive: missing manifest.json");
+        }
+        Map<String, Object> manifest = MAPPER.readValue(manifestBytes, Map.class);
+        String version = String.valueOf(manifest.get("version"));
+        if (!"1".equals(version)) {
+            throw new IOException("Unsupported agent archive version: " + version);
+        }
+
+        // Restore SQLite database.
+        if (dbBytes != null && dbBytes.length > 0) {
+            Files.write(Path.of(storagePath), dbBytes);
+        }
+
+        // Create engines and knowledge store.
+        ChatEngine chat = ChatEngine.load(chatModelPath, new LoadOptions());
+        EmbedEngine embed = EmbedEngine.load(embedModelPath, new LoadOptions());
+        KnowledgeStore store;
+        try {
+            store = new KnowledgeStore(storagePath);
+        } catch (SQLException e) {
+            chat.close();
+            embed.close();
+            throw e;
+        }
+        ToolRegistry registry = new ToolRegistry();
+        return new Agent(chat, embed, store, registry,
+                         chatModelPath, embedModelPath, storagePath);
+    }
+
+    /**
      * Close all owned resources (engines + knowledge store).
      * Safe to call multiple times.
      */
@@ -257,5 +413,12 @@ public final class Agent implements AutoCloseable {
         } catch (Exception e) {
             return "{}";
         }
+    }
+
+    private static void writeZipEntry(ZipOutputStream zos, String name, byte[] data)
+            throws IOException {
+        zos.putNextEntry(new ZipEntry(name));
+        zos.write(data);
+        zos.closeEntry();
     }
 }

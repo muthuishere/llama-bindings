@@ -26,18 +26,25 @@ public final class KnowledgeStore implements AutoCloseable {
 
     /** A retrieved knowledge document. */
     public static final class Document {
-        public final long   id;
-        public final String text;
-        public final double score;
+        public final long    id;
+        public final String  text;
+        public final double  score;
+        public final float[] embedding;
 
         Document(long id, String text, double score) {
-            this.id    = id;
-            this.text  = text;
-            this.score = score;
+            this(id, text, score, null);
+        }
+
+        Document(long id, String text, double score, float[] embedding) {
+            this.id        = id;
+            this.text      = text;
+            this.score     = score;
+            this.embedding = embedding;
         }
     }
 
     private final Connection conn;
+    private final String path;
 
     /**
      * Open (or create) a SQLite knowledge store at {@code dsn}.
@@ -48,6 +55,7 @@ public final class KnowledgeStore implements AutoCloseable {
      * @throws SQLException if the database cannot be opened
      */
     public KnowledgeStore(String dsn) throws SQLException {
+        this.path = dsn.startsWith("jdbc:") ? dsn.substring("jdbc:sqlite:".length()) : dsn;
         String url = dsn.startsWith("jdbc:") ? dsn : "jdbc:sqlite:" + dsn;
         conn = DriverManager.getConnection(url);
         conn.setAutoCommit(true);
@@ -178,6 +186,36 @@ public final class KnowledgeStore implements AutoCloseable {
             entries = entries.subList(0, limit);
         }
         return new ArrayList<>(entries);
+    }
+
+    /**
+     * Returns all documents in insertion order.
+     *
+     * @return list of all documents with score set to 0.0
+     * @throws SQLException on database error
+     */
+    public synchronized List<Document> all() throws SQLException {
+        List<Document> docs = new ArrayList<>();
+        try (Statement st = conn.createStatement();
+             ResultSet rs = st.executeQuery(
+                     "SELECT id, text, embedding FROM documents ORDER BY id")) {
+            while (rs.next()) {
+                long id      = rs.getLong(1);
+                String text  = rs.getString(2);
+                float[] emb  = bytesToFloats(rs.getBytes(3));
+                docs.add(new Document(id, text, 0.0, emb));
+            }
+        }
+        return docs;
+    }
+
+    /**
+     * Returns the SQLite database path (as supplied to the constructor).
+     *
+     * @return the database path, e.g. {@code ":memory:"} or a file path
+     */
+    public String getPath() {
+        return path;
     }
 
     /** Close the underlying SQLite connection. */

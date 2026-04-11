@@ -9,10 +9,15 @@
 package agent
 
 import (
+	"archive/zip"
 	"encoding/json"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/muthuishere/llama-bindings/go/knowledge"
 	"github.com/muthuishere/llama-bindings/go/llama"
@@ -28,6 +33,10 @@ type Agent struct {
 	embed *llama.EmbedEngine
 	store *knowledge.Store
 	reg   *tools.Registry
+
+	chatModelPath  string
+	embedModelPath string
+	storagePath    string
 
 	mu       sync.Mutex
 	sessions map[string][]llama.Message // sessionID → history
@@ -56,11 +65,14 @@ func New(chatModelPath, embedModelPath, storagePath string) (*Agent, error) {
 	}
 
 	return &Agent{
-		chat:     chat,
-		embed:    embed,
-		store:    store,
-		reg:      tools.New(),
-		sessions: make(map[string][]llama.Message),
+		chat:           chat,
+		embed:          embed,
+		store:          store,
+		reg:            tools.New(),
+		chatModelPath:  chatModelPath,
+		embedModelPath: embedModelPath,
+		storagePath:    storagePath,
+		sessions:       make(map[string][]llama.Message),
 	}, nil
 }
 
@@ -109,12 +121,22 @@ func (a *Agent) Chat(sessionID, message string) (string, error) {
 	// 4. Agentic loop.
 	msgs := buildMessages(systemPrompt, history)
 	toolDefs := a.reg.Definitions()
+	justCalledTool := false // after tool execution, switch to text mode for final answer
 
 	for i := 0; i < maxToolIterations; i++ {
+		// After a tool call + result, ask the model for a text answer.
+		useTools := toolDefs
+		mode := pickResponseMode(toolDefs)
+		if justCalledTool {
+			useTools = nil
+			mode = llama.ResponseModeText
+			justCalledTool = false
+		}
+
 		req := llama.ChatRequest{
 			Messages:     msgs,
-			ResponseMode: pickResponseMode(toolDefs),
-			Tools:        toolDefs,
+			ResponseMode: mode,
+			Tools:        useTools,
 			ToolChoice:   "auto",
 		}
 
@@ -157,7 +179,8 @@ func (a *Agent) Chat(sessionID, message string) (string, error) {
 					ToolName: tc.Name,
 				})
 			}
-			// Continue the loop with the tool results in context.
+			// Continue the loop — next iteration uses text mode.
+			justCalledTool = true
 
 		case "structured_json":
 			// Treat as text reply.
@@ -189,6 +212,196 @@ func (a *Agent) Close() {
 	a.store.Close()
 	a.embed.Close()
 	a.chat.Close()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Export / Import
+// ─────────────────────────────────────────────────────────────────────────────
+
+// exportManifest is serialised as manifest.json inside the export ZIP.
+type exportManifest struct {
+	Version      string `json:"version"`
+	CreatedAt    string `json:"created_at"`
+	ChatModel    string `json:"chat_model"`
+	EmbedModel   string `json:"embed_model"`
+	StoragePath  string `json:"storage_path"`
+	DocCount     int    `json:"doc_count"`
+	EmbeddingDim int    `json:"embedding_dim"`
+}
+
+// exportDoc is one entry in the knowledge.json array.
+type exportDoc struct {
+	Text      string    `json:"text"`
+	Embedding []float32 `json:"embedding"`
+}
+
+// Export writes a complete Agent bundle to a ZIP archive at zipPath.
+func (a *Agent) Export(zipPath string) error {
+	docs, err := a.store.All()
+	if err != nil {
+		return fmt.Errorf("agent: export: %w", err)
+	}
+
+	// Build manifest.
+	embDim := 0
+	if len(docs) > 0 {
+		embDim = len(docs[0].Embedding)
+	}
+	manifest := exportManifest{
+		Version:      "1",
+		CreatedAt:    time.Now().UTC().Format(time.RFC3339),
+		ChatModel:    filepath.Base(a.chatModelPath),
+		EmbedModel:   filepath.Base(a.embedModelPath),
+		StoragePath:  a.storagePath,
+		DocCount:     len(docs),
+		EmbeddingDim: embDim,
+	}
+
+	manifestJSON, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return fmt.Errorf("agent: export: marshal manifest: %w", err)
+	}
+
+	// Build knowledge.json.
+	knowledgeDocs := make([]exportDoc, len(docs))
+	for i, d := range docs {
+		knowledgeDocs[i] = exportDoc{Text: d.Text, Embedding: d.Embedding}
+	}
+	knowledgeJSON, err := json.Marshal(knowledgeDocs)
+	if err != nil {
+		return fmt.Errorf("agent: export: marshal knowledge: %w", err)
+	}
+
+	// Create the ZIP file.
+	f, err := os.Create(zipPath)
+	if err != nil {
+		return fmt.Errorf("agent: export: create zip: %w", err)
+	}
+	defer f.Close()
+
+	zw := zip.NewWriter(f)
+	defer zw.Close()
+
+	// Write manifest.json.
+	if err := writeZipEntry(zw, "manifest.json", manifestJSON); err != nil {
+		return err
+	}
+
+	// Write knowledge.json.
+	if err := writeZipEntry(zw, "knowledge.json", knowledgeJSON); err != nil {
+		return err
+	}
+
+	// Write knowledge.db — copy the file if it's a real path.
+	dbPath := a.store.Path()
+	if dbPath != "" && dbPath != ":memory:" {
+		dbBytes, err := os.ReadFile(dbPath)
+		if err != nil {
+			return fmt.Errorf("agent: export: read db: %w", err)
+		}
+		if err := writeZipEntry(zw, "knowledge.db", dbBytes); err != nil {
+			return err
+		}
+	} else {
+		// In-memory store: write empty placeholder.
+		if err := writeZipEntry(zw, "knowledge.db", []byte{}); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// ImportFrom restores an Agent from a previously exported ZIP bundle.
+func ImportFrom(zipPath, chatModelPath, embedModelPath, storagePath string) (*Agent, error) {
+	zr, err := zip.OpenReader(zipPath)
+	if err != nil {
+		return nil, fmt.Errorf("agent: import: open zip: %w", err)
+	}
+	defer zr.Close()
+
+	// Read manifest.json.
+	manifestData, err := readZipEntry(&zr.Reader, "manifest.json")
+	if err != nil {
+		return nil, fmt.Errorf("agent: import: %w", err)
+	}
+	var manifest exportManifest
+	if err := json.Unmarshal(manifestData, &manifest); err != nil {
+		return nil, fmt.Errorf("agent: import: parse manifest: %w", err)
+	}
+	if manifest.Version != "1" {
+		return nil, fmt.Errorf("agent: import: unsupported version %q", manifest.Version)
+	}
+
+	// Default storage path.
+	if storagePath == "" {
+		storagePath = "agent.db"
+	}
+
+	// Extract knowledge.db if present and non-empty.
+	dbData, err := readZipEntry(&zr.Reader, "knowledge.db")
+	if err != nil {
+		return nil, fmt.Errorf("agent: import: %w", err)
+	}
+	if len(dbData) > 0 {
+		if err := os.WriteFile(storagePath, dbData, 0644); err != nil {
+			return nil, fmt.Errorf("agent: import: write db: %w", err)
+		}
+	}
+
+	// If no DB data was exported (in-memory store), we need to rebuild from
+	// knowledge.json.
+	if len(dbData) == 0 {
+		knowledgeData, err := readZipEntry(&zr.Reader, "knowledge.json")
+		if err != nil {
+			return nil, fmt.Errorf("agent: import: %w", err)
+		}
+		var docs []exportDoc
+		if err := json.Unmarshal(knowledgeData, &docs); err != nil {
+			return nil, fmt.Errorf("agent: import: parse knowledge: %w", err)
+		}
+		// Create a fresh store and insert all docs.
+		store, err := knowledge.New(storagePath)
+		if err != nil {
+			return nil, fmt.Errorf("agent: import: create store: %w", err)
+		}
+		for _, d := range docs {
+			if err := store.Add(d.Text, d.Embedding); err != nil {
+				store.Close()
+				return nil, fmt.Errorf("agent: import: add doc: %w", err)
+			}
+		}
+		store.Close()
+	}
+
+	// Now create a normal Agent pointing at the restored DB.
+	return New(chatModelPath, embedModelPath, storagePath)
+}
+
+func writeZipEntry(zw *zip.Writer, name string, data []byte) error {
+	w, err := zw.Create(name)
+	if err != nil {
+		return fmt.Errorf("agent: export: create %s: %w", name, err)
+	}
+	_, err = w.Write(data)
+	if err != nil {
+		return fmt.Errorf("agent: export: write %s: %w", name, err)
+	}
+	return nil
+}
+
+func readZipEntry(zr *zip.Reader, name string) ([]byte, error) {
+	for _, f := range zr.File {
+		if f.Name == name {
+			rc, err := f.Open()
+			if err != nil {
+				return nil, fmt.Errorf("open %s: %w", name, err)
+			}
+			defer rc.Close()
+			return io.ReadAll(rc)
+		}
+	}
+	return nil, fmt.Errorf("missing %s in archive", name)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

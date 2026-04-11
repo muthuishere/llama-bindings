@@ -86,6 +86,16 @@ export class KnowledgeStore {
     return entries.slice(0, limit);
   }
 
+  /**
+   * Returns all documents in insertion order.
+   *
+   * @returns {Array<{text:string, embedding:number[]}>}
+   */
+  all() {
+    this._assertOpen();
+    return this.#docs.map(d => ({ text: d.text, embedding: [...d.embedding] }));
+  }
+
   /** Release resources (no-op for in-memory store, provided for API symmetry). */
   close() {
     this.#closed = true;

@@ -19,16 +19,18 @@ import (
 
 // Document is a retrieved knowledge item.
 type Document struct {
-	ID    int64
-	Text  string
-	Score float64
+	ID        int64
+	Text      string
+	Score     float64
+	Embedding []float32
 }
 
 // Store is a persistent knowledge store backed by SQLite.
 // Create with New; always call Close when done.
 type Store struct {
-	mu sync.Mutex
-	db *sql.DB
+	mu   sync.Mutex
+	db   *sql.DB
+	path string
 }
 
 // New opens (or creates) a SQLite knowledge store at dsn.
@@ -40,7 +42,7 @@ func New(dsn string) (*Store, error) {
 	}
 	db.SetMaxOpenConns(1) // SQLite is single-writer
 
-	s := &Store{db: db}
+	s := &Store{db: db, path: dsn}
 	if err := s.migrate(); err != nil {
 		db.Close()
 		return nil, err
@@ -203,6 +205,39 @@ func (s *Store) Search(queryVec []float32, queryText string, limit int) ([]Docum
 		docs[i] = Document{ID: e.id, Text: e.text, Score: e.rrf}
 	}
 	return docs, nil
+}
+
+// All returns all documents in insertion order.
+func (s *Store) All() ([]Document, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	rows, err := s.db.Query(`SELECT id, text, embedding FROM documents ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("knowledge: all docs query: %w", err)
+	}
+	defer rows.Close()
+
+	var docs []Document
+	for rows.Next() {
+		var id int64
+		var text string
+		var blob []byte
+		if err := rows.Scan(&id, &text, &blob); err != nil {
+			return nil, err
+		}
+		docs = append(docs, Document{
+			ID:        id,
+			Text:      text,
+			Embedding: bytesToFloat32Slice(blob),
+		})
+	}
+	return docs, rows.Err()
+}
+
+// Path returns the SQLite database path.
+func (s *Store) Path() string {
+	return s.path
 }
 
 // Close closes the underlying SQLite database.

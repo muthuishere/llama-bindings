@@ -2,7 +2,16 @@
   "name": "@llama-bindings/js-browser",
   "version": "0.1.0",
   "description": "Browser JavaScript / WebAssembly bindings for the llama.cpp bridge library",
-  "keywords": ["llama", "llama.cpp", "wasm", "webassembly", "browser", "ai", "llm", "embedding"],
+  "keywords": [
+    "llama",
+    "llama.cpp",
+    "wasm",
+    "webassembly",
+    "browser",
+    "ai",
+    "llm",
+    "embedding"
+  ],
   "homepage": "https://github.com/muthuishere/llama-bindings",
   "license": "MIT",
   "type": "module",
@@ -25,8 +34,8 @@
     "prepublishOnly": "npm run build && npm test"
   },
   "devDependencies": {
-    "jest": "^29.7.0",
-    "eslint": "^8.57.0"
+    "eslint": "^8.57.0",
+    "jest": "^29.7.0"
   },
   "engines": {
     "node": ">=18"
@@ -34,5 +43,8 @@
   "browser": "./dist/llama-browser.js",
   "publishConfig": {
     "access": "public"
+  },
+  "dependencies": {
+    "fflate": "^0.8.2"
   }
 }

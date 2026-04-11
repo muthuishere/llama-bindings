@@ -22,6 +22,7 @@
  *   agent.close();
  */
 
+import { zipSync, unzipSync } from 'fflate';
 import { LlamaChat }      from '../chat.js';
 import { LlamaEmbed }     from '../embed.js';
 import { KnowledgeStore } from '../knowledge/store.js';
@@ -34,6 +35,8 @@ export class Agent {
   /** @type {LlamaEmbed}     */ #embed;
   /** @type {KnowledgeStore} */ #store;
   /** @type {ToolRegistry}   */ #registry;
+  /** @type {string}         */ #chatModelPath;
+  /** @type {string}         */ #embedModelPath;
   /** @type {Map<string,Array>} sessionId → message history */
   #sessions = new Map();
   /** @type {boolean}        */ #closed = false;
@@ -41,11 +44,13 @@ export class Agent {
   /**
    * @private – use {@link Agent.create} instead.
    */
-  constructor(chat, embed, store, registry) {
-    this.#chat     = chat;
-    this.#embed    = embed;
-    this.#store    = store;
-    this.#registry = registry;
+  constructor(chat, embed, store, registry, chatModelPath, embedModelPath) {
+    this.#chat           = chat;
+    this.#embed          = embed;
+    this.#store          = store;
+    this.#registry       = registry;
+    this.#chatModelPath  = chatModelPath;
+    this.#embedModelPath = embedModelPath;
   }
 
   /**
@@ -63,7 +68,7 @@ export class Agent {
     const embed = await LlamaEmbed.load(embedModelPath, { onEvent: opts.onEvent });
     const store    = new KnowledgeStore();
     const registry = new ToolRegistry();
-    return new Agent(chat, embed, store, registry);
+    return new Agent(chat, embed, store, registry, chatModelPath, embedModelPath);
   }
 
   /**
@@ -189,6 +194,85 @@ export class Agent {
     this.#store.close();
   }
 
+  /**
+   * Export a complete Agent bundle as a ZIP Blob.
+   *
+   * @returns {Promise<Blob>}
+   */
+  async export() {
+    this._assertOpen();
+
+    const docs = this.#store.all();
+
+    const manifest = {
+      version:       '1',
+      created_at:    new Date().toISOString(),
+      chat_model:    basename(this.#chatModelPath),
+      embed_model:   basename(this.#embedModelPath),
+      storage_path:  ':memory:',
+      doc_count:     docs.length,
+      embedding_dim: docs[0]?.embedding.length || 0,
+    };
+
+    const knowledgeJson = docs.map(d => ({ text: d.text, embedding: d.embedding }));
+
+    const zip = zipSync({
+      'manifest.json':  new TextEncoder().encode(JSON.stringify(manifest, null, 2)),
+      'knowledge.json': new TextEncoder().encode(JSON.stringify(knowledgeJson)),
+      'knowledge.db':   new Uint8Array(0),
+    });
+
+    return new Blob([zip], { type: 'application/zip' });
+  }
+
+  /**
+   * Restore an Agent from a ZIP bundle.
+   *
+   * @param {Blob|File|ArrayBuffer|Uint8Array} zipData
+   * @param {string} chatModelPath
+   * @param {string} embedModelPath
+   * @param {object} [opts={}]
+   * @returns {Promise<Agent>}
+   */
+  static async importFrom(zipData, chatModelPath, embedModelPath, opts = {}) {
+    let uint8;
+    if (zipData instanceof Uint8Array) {
+      uint8 = zipData;
+    } else if (zipData instanceof ArrayBuffer) {
+      uint8 = new Uint8Array(zipData);
+    } else if (typeof Blob !== 'undefined' && zipData instanceof Blob) {
+      uint8 = new Uint8Array(await zipData.arrayBuffer());
+    } else {
+      throw new Error('Agent.importFrom: unsupported zipData type');
+    }
+
+    const files = unzipSync(uint8);
+
+    const manifestRaw = new TextDecoder().decode(files['manifest.json']);
+    const manifest = JSON.parse(manifestRaw);
+    if (manifest.version !== '1') {
+      throw new Error(`Agent.importFrom: unsupported manifest version "${manifest.version}"`);
+    }
+
+    const knowledgeRaw = new TextDecoder().decode(files['knowledge.json']);
+    const docs = JSON.parse(knowledgeRaw);
+
+    const agent = await Agent.create(chatModelPath, embedModelPath, ':memory:', opts);
+    agent._restoreDocs(docs);
+    return agent;
+  }
+
+  /**
+   * Restore documents directly into the knowledge store (used by importFrom).
+   *
+   * @param {Array<{text:string, embedding:number[]}>} docs
+   */
+  _restoreDocs(docs) {
+    for (const doc of docs) {
+      this.#store.add(doc.text, doc.embedding);
+    }
+  }
+
   // ─────────────────────────────────────────────────────────────────────────
   // Internal
   // ─────────────────────────────────────────────────────────────────────────
@@ -226,4 +310,11 @@ function buildMessages(systemPrompt, history) {
     { role: 'system', content: systemPrompt },
     ...history,
   ];
+}
+
+/** Extract the filename from a path (works for both / and \ separators). */
+function basename(path) {
+  if (!path) return '';
+  const parts = path.replace(/\\/g, '/').split('/');
+  return parts[parts.length - 1];
 }

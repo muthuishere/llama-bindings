@@ -1,7 +1,11 @@
 package agent_test
 
 import (
+	"archive/zip"
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/muthuishere/llama-bindings/go/agent"
@@ -143,5 +147,173 @@ func TestToolRegistryHandlerError(t *testing.T) {
 	_, execErr := r.Execute("fail", nil)
 	if execErr == nil {
 		t.Fatal("expected error from failing handler")
+	}
+}
+
+func TestExportImportRoundTrip(t *testing.T) {
+	a := newAgentOrSkip(t)
+
+	// Add some documents.
+	docs := []string{
+		"The capital of France is Paris.",
+		"Go is a statically typed language.",
+		"SQLite is a lightweight database engine.",
+	}
+	for _, d := range docs {
+		if err := a.AddDocument(d); err != nil {
+			t.Fatalf("AddDocument(%q): %v", d, err)
+		}
+	}
+
+	// Export to a temp ZIP.
+	tmpDir := t.TempDir()
+	zipPath := filepath.Join(tmpDir, "export.zip")
+	if err := a.Export(zipPath); err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+
+	// Verify ZIP exists and has expected entries.
+	zr, err := zip.OpenReader(zipPath)
+	if err != nil {
+		t.Fatalf("open zip: %v", err)
+	}
+	defer zr.Close()
+
+	entryNames := make(map[string]bool)
+	for _, f := range zr.File {
+		entryNames[f.Name] = true
+	}
+	for _, name := range []string{"manifest.json", "knowledge.json", "knowledge.db"} {
+		if !entryNames[name] {
+			t.Errorf("missing ZIP entry %q", name)
+		}
+	}
+
+	// Import from the ZIP.
+	importDBPath := filepath.Join(tmpDir, "imported.db")
+	imported, err := agent.ImportFrom(zipPath, dummyChat, dummyEmbed, importDBPath)
+	if err != nil {
+		t.Fatalf("ImportFrom: %v", err)
+	}
+	defer imported.Close()
+
+	// The imported agent should work (basic smoke test).
+	resp, err := imported.Chat("import-test", "hello")
+	if err != nil {
+		t.Fatalf("Chat on imported agent: %v", err)
+	}
+	if resp == "" {
+		t.Fatal("expected non-empty response from imported agent")
+	}
+}
+
+func TestExportZipStructure(t *testing.T) {
+	// This test validates the ZIP structure without requiring the bridge.
+	// We test by creating a minimal ZIP that matches the export format,
+	// then verify the manifest can be parsed.
+
+	tmpDir := t.TempDir()
+	zipPath := filepath.Join(tmpDir, "test.zip")
+
+	// Create a mock export ZIP.
+	manifest := map[string]interface{}{
+		"version":       "1",
+		"created_at":    "2024-01-01T00:00:00Z",
+		"chat_model":    "chat.gguf",
+		"embed_model":   "embed.gguf",
+		"storage_path":  "agent.db",
+		"doc_count":     2,
+		"embedding_dim": 3,
+	}
+	manifestJSON, _ := json.MarshalIndent(manifest, "", "  ")
+
+	knowledgeDocs := []map[string]interface{}{
+		{"text": "hello world", "embedding": []float64{0.1, 0.2, 0.3}},
+		{"text": "foo bar", "embedding": []float64{0.4, 0.5, 0.6}},
+	}
+	knowledgeJSON, _ := json.Marshal(knowledgeDocs)
+
+	f, err := os.Create(zipPath)
+	if err != nil {
+		t.Fatalf("create zip: %v", err)
+	}
+	zw := zip.NewWriter(f)
+
+	for name, data := range map[string][]byte{
+		"manifest.json":  manifestJSON,
+		"knowledge.json": knowledgeJSON,
+		"knowledge.db":   {}, // empty placeholder
+	} {
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatalf("create entry %s: %v", name, err)
+		}
+		if _, err := w.Write(data); err != nil {
+			t.Fatalf("write entry %s: %v", name, err)
+		}
+	}
+	zw.Close()
+	f.Close()
+
+	// Verify the ZIP can be opened and has all entries.
+	zr, err := zip.OpenReader(zipPath)
+	if err != nil {
+		t.Fatalf("open zip: %v", err)
+	}
+	defer zr.Close()
+
+	if len(zr.File) != 3 {
+		t.Fatalf("expected 3 entries, got %d", len(zr.File))
+	}
+
+	// Verify manifest content.
+	for _, f := range zr.File {
+		if f.Name == "manifest.json" {
+			rc, _ := f.Open()
+			var m map[string]interface{}
+			if err := json.NewDecoder(rc).Decode(&m); err != nil {
+				t.Fatalf("decode manifest: %v", err)
+			}
+			rc.Close()
+			if m["version"] != "1" {
+				t.Errorf("expected version 1, got %v", m["version"])
+			}
+			if int(m["doc_count"].(float64)) != 2 {
+				t.Errorf("expected doc_count 2, got %v", m["doc_count"])
+			}
+		}
+	}
+}
+
+func TestImportFromInvalidVersion(t *testing.T) {
+	tmpDir := t.TempDir()
+	zipPath := filepath.Join(tmpDir, "bad.zip")
+
+	// Create a ZIP with version "99".
+	manifest := map[string]interface{}{
+		"version":       "99",
+		"created_at":    "2024-01-01T00:00:00Z",
+		"chat_model":    "chat.gguf",
+		"embed_model":   "embed.gguf",
+		"storage_path":  "agent.db",
+		"doc_count":     0,
+		"embedding_dim": 0,
+	}
+	manifestJSON, _ := json.Marshal(manifest)
+
+	f, _ := os.Create(zipPath)
+	zw := zip.NewWriter(f)
+	w, _ := zw.Create("manifest.json")
+	w.Write(manifestJSON)
+	w2, _ := zw.Create("knowledge.json")
+	w2.Write([]byte("[]"))
+	w3, _ := zw.Create("knowledge.db")
+	w3.Write([]byte{})
+	zw.Close()
+	f.Close()
+
+	_, err := agent.ImportFrom(zipPath, dummyChat, dummyEmbed, filepath.Join(tmpDir, "out.db"))
+	if err == nil {
+		t.Fatal("expected error for unsupported version")
 	}
 }

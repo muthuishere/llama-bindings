@@ -311,10 +311,36 @@ static std::string run_generation(struct llama_model* model,
     llama_memory_t mem = llama_get_memory(ctx);
     if (mem) llama_memory_clear(mem, true);
 
-    /* Decode the prompt */
+    /* Process the prompt in chunks of n_batch to avoid exceeding batch limits.
+     * Supports both decoder-only and encoder-decoder models. */
     {
-        struct llama_batch batch = llama_batch_get_one(tokens.data(), (int32_t)tokens.size());
-        if (llama_decode(ctx, batch) != 0) return "";
+        bool has_enc = llama_model_has_encoder(model);
+        int n_batch = (int)llama_n_batch(ctx);
+        if (n_batch <= 0) n_batch = 512;
+
+        if (has_enc) {
+            /* Encoder-decoder: encode prompt, then decode a start token */
+            for (int i = 0; i < n_tokens; i += n_batch) {
+                int chunk = n_tokens - i;
+                if (chunk > n_batch) chunk = n_batch;
+                struct llama_batch batch = llama_batch_get_one(tokens.data() + i, chunk);
+                if (llama_encode(ctx, batch) != 0) return "";
+            }
+            llama_token dec_start = llama_model_decoder_start_token(model);
+            if (dec_start == LLAMA_TOKEN_NULL) {
+                dec_start = llama_vocab_bos(vocab);
+            }
+            struct llama_batch dec_batch = llama_batch_get_one(&dec_start, 1);
+            if (llama_decode(ctx, dec_batch) != 0) return "";
+        } else {
+            /* Decoder-only: decode prompt in chunks */
+            for (int i = 0; i < n_tokens; i += n_batch) {
+                int chunk = n_tokens - i;
+                if (chunk > n_batch) chunk = n_batch;
+                struct llama_batch batch = llama_batch_get_one(tokens.data() + i, chunk);
+                if (llama_decode(ctx, batch) != 0) return "";
+            }
+        }
     }
 
     /* Build sampler chain */

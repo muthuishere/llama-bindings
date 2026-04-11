@@ -112,4 +112,110 @@ describe('Agent', () => {
       agent.close();
     }
   });
+
+  // ─── Export / Import ────────────────────────────────────────────────────
+
+  describe('export / import', () => {
+
+    test('export returns a Blob with application/zip type', async () => {
+      const agent = await createAgent();
+      try {
+        await agent.addDocument('The capital of France is Paris.');
+        const blob = await agent.export();
+        expect(blob).toBeInstanceOf(Blob);
+        expect(blob.type).toBe('application/zip');
+        expect(blob.size).toBeGreaterThan(0);
+      } finally {
+        agent.close();
+      }
+    });
+
+    test('export with no documents produces valid zip', async () => {
+      const agent = await createAgent();
+      try {
+        const blob = await agent.export();
+        expect(blob.size).toBeGreaterThan(0);
+      } finally {
+        agent.close();
+      }
+    });
+
+    test('export after close throws', async () => {
+      const agent = await createAgent();
+      agent.close();
+      await expect(agent.export()).rejects.toThrow();
+    });
+
+    test('round-trip: export then importFrom preserves documents', async () => {
+      const agent = await createAgent();
+      try {
+        await agent.addDocument('The sky is blue.');
+        await agent.addDocument('Water boils at 100 degrees.');
+
+        const blob = await agent.export();
+        const restored = await Agent.importFrom(blob, 'chat.gguf', 'embed.gguf');
+        try {
+          // The restored agent should be able to chat without error.
+          const reply = await restored.chat('s1', 'Tell me about water.');
+          expect(typeof reply).toBe('string');
+        } finally {
+          restored.close();
+        }
+      } finally {
+        agent.close();
+      }
+    });
+
+    test('importFrom accepts ArrayBuffer', async () => {
+      const agent = await createAgent();
+      try {
+        await agent.addDocument('Hello world.');
+        const blob = await agent.export();
+        const arrayBuffer = await blob.arrayBuffer();
+
+        const restored = await Agent.importFrom(arrayBuffer, 'c.gguf', 'e.gguf');
+        try {
+          expect(restored).toBeInstanceOf(Agent);
+        } finally {
+          restored.close();
+        }
+      } finally {
+        agent.close();
+      }
+    });
+
+    test('importFrom accepts Uint8Array', async () => {
+      const agent = await createAgent();
+      try {
+        await agent.addDocument('Hello world.');
+        const blob = await agent.export();
+        const uint8 = new Uint8Array(await blob.arrayBuffer());
+
+        const restored = await Agent.importFrom(uint8, 'c.gguf', 'e.gguf');
+        try {
+          expect(restored).toBeInstanceOf(Agent);
+        } finally {
+          restored.close();
+        }
+      } finally {
+        agent.close();
+      }
+    });
+
+    test('importFrom rejects unsupported manifest version', async () => {
+      // Build a zip with version "99" to trigger the version check.
+      const { zipSync } = await import('fflate');
+      const manifest = JSON.stringify({ version: '99' });
+      const knowledge = JSON.stringify([]);
+      const zip = zipSync({
+        'manifest.json':  new TextEncoder().encode(manifest),
+        'knowledge.json': new TextEncoder().encode(knowledge),
+        'knowledge.db':   new Uint8Array(0),
+      });
+
+      await expect(
+        Agent.importFrom(new Uint8Array(zip), 'c.gguf', 'e.gguf')
+      ).rejects.toThrow(/unsupported manifest version/);
+    });
+  });
 });
