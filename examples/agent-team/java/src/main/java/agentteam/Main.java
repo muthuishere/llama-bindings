@@ -153,7 +153,9 @@ public class Main {
                 writeNDJSON(out, Map.of("done", true, "reply", reply));
 
             } catch (Exception e) {
-                writeNDJSON(out, Map.of("error", e.getMessage() != null ? e.getMessage() : "unknown error", "done", true));
+                try {
+                    writeNDJSON(out, Map.of("error", e.getMessage() != null ? e.getMessage() : "unknown error", "done", true));
+                } catch (Exception ignored) { }
             }
         };
     }
